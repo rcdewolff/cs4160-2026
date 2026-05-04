@@ -45,6 +45,8 @@ class PowCommunity(Community):
 	def __init__(self, settings) -> None:
 		super().__init__(settings)
 		self.add_message_handler(ResponsePayload, self.on_response)
+		self.add_message_handler(SubmissionPayload, self.on_submission)
+		ResponsePayload(False, "") # Weird fix on my end that somehow fixed handling the server response by initializing ResponsePayload once
 		self.found_server_peer = False
 
 	@lazy_wrapper(ResponsePayload)
@@ -56,6 +58,10 @@ class PowCommunity(Community):
 			handle.write(
 				f"Received response from server: success={payload.success}, message={payload.message}\n"
 			)
+	
+	@lazy_wrapper(SubmissionPayload)
+	def on_submission(self, peer: Peer, payload: SubmissionPayload) -> None:
+		print(f"Received submission from peer {peer}, ignoring since we are not the server")
 		
 	def started(self) -> None:
 		print("Community started, looking for server peer...")
@@ -66,6 +72,7 @@ class PowCommunity(Community):
 						print("Found server peer in community")
 						self.found_server_peer = True
 						self.ez_send(peer, SubmissionPayload(EMAIL, GITHUB_URL, self.nonce))
+						print("Submitted PoW result to server peer, waiting for response...")
 						return
 				print("Server peer not found yet, waiting for next peer update")
 			else:
@@ -105,7 +112,7 @@ async def main() -> None:
 	PowCommunity.nonce = record["nonce"]
 
 	builder = ConfigBuilder().clear_keys().clear_overlays()
-	builder.add_key("my peer", "medium", POW_FILE)
+	builder.add_key("my peer", "medium", KEY_FILE)
 	builder.add_overlay("PowCommunity", "my peer",
 											[WalkerDefinition(Strategy.RandomWalk,
 																				10, {"timeout": 3.0})],
