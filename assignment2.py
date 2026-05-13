@@ -109,10 +109,12 @@ class GroupSigningCommunity(Community):
 		print("Community started")
 		self.register_task("tick", self.tick, interval=0.5, delay=0)
 
+  # Discovery tick, sent every 0.5 seconds
 	async def tick(self) -> None:
 		if self.disabled:
 			return
 
+    # Discover server and member peers
 		for peer in self.get_peers():
 			pubkey_hex = peer.public_key.key_to_bin().hex()
 			if pubkey_hex == SERVER_PUBKEY_HEX:
@@ -120,6 +122,7 @@ class GroupSigningCommunity(Community):
 			elif pubkey_hex in self.member_pubkeys_set and pubkey_hex != self.my_pubkey_hex:
 				self.member_peers[pubkey_hex] = peer
 
+    # If server and member peers are found, send ready messages
 		if self.server_peer and len(self.member_peers) == 2:
 			if len(self.ready_members) < 3:
 				payload = ReadyPayload(self.my_peer.public_key.key_to_bin())
@@ -127,12 +130,14 @@ class GroupSigningCommunity(Community):
 					self.ez_send(peer, payload)
 				self.ready_members.add(self.my_pubkey_hex)
 
+      # If all members are ready, and we have not yet requested round 1, and we are the first submitter, request the challenge for round 1
 			if len(self.ready_members) == 3 and self.current_round == 0 and not self.requested_round1:
 				if self.my_pubkey_hex == self.member_pubkeys_hex[0]:
 					self.ez_send(self.server_peer, ChallengeRequestPayload(GROUP_ID))
 					self.requested_round1 = True
 					print("Requested challenge for round 1")
 
+  # Handle receiving a nonce for a round
 	def handle_nonce(self, round_number: int, nonce: bytes) -> None:
 		if round_number <= self.rounds_completed:
 			return
@@ -162,6 +167,7 @@ class GroupSigningCommunity(Community):
 		self.sent_signature_round = round_number
 		print(f"Sent signature for round {round_number}")
 
+  # Submit if we are submitter and collected 3 signatures
 	def submit_if_ready(self) -> None:
 		if not self.server_peer:
 			return
@@ -177,6 +183,7 @@ class GroupSigningCommunity(Community):
 		self.submitted_round = self.current_round
 		print(f"Submitted bundle for round {self.current_round}")
 
+  # Handle ready messages from members
 	@lazy_wrapper(ReadyPayload)
 	def on_ready(self, peer: Peer, payload: ReadyPayload) -> None:
 		pubkey_hex = peer.public_key.key_to_bin().hex()
@@ -187,6 +194,7 @@ class GroupSigningCommunity(Community):
 		self.ready_members.add(pubkey_hex)
 		print(f"Ready from member {pubkey_hex}")
 
+  # Forward nonce from server to members
 	@lazy_wrapper(ChallengeResponsePayload)
 	def on_challenge_response(self, peer: Peer, payload: ChallengeResponsePayload) -> None:
 		if peer.public_key.key_to_bin().hex() != SERVER_PUBKEY_HEX:
@@ -197,6 +205,7 @@ class GroupSigningCommunity(Community):
 			self.ez_send(member_peer, relay)
 		print(f"Nonce received for round {payload.round_number}")
 
+  # Handle received nonce
 	@lazy_wrapper(NoncePayload)
 	def on_nonce(self, peer: Peer, payload: NoncePayload) -> None:
 		if peer.public_key.key_to_bin().hex() not in self.member_pubkeys_set:
@@ -204,6 +213,7 @@ class GroupSigningCommunity(Community):
 		self.handle_nonce(payload.round_number, payload.nonce)
 		print(f"Nonce relayed for round {payload.round_number}")
 
+  # Handle receiving signatures from members, and submit if we are the submitter and have all signatures
 	@lazy_wrapper(SignatureSharePayload)
 	def on_signature_share(self, peer: Peer, payload: SignatureSharePayload) -> None:
 		pubkey_hex = peer.public_key.key_to_bin().hex()
@@ -220,6 +230,7 @@ class GroupSigningCommunity(Community):
 		self.submit_if_ready()
 		print(f"Received signature from {pubkey_hex} for round {payload.round_number}")
 
+  # Handle receiving a round result, request next challenge if succesful and not done, and we submitted last
 	@lazy_wrapper(RoundResultPayload)
 	def on_round_result(self, peer: Peer, payload: RoundResultPayload) -> None:
 		if peer.public_key.key_to_bin().hex() != SERVER_PUBKEY_HEX:
@@ -236,6 +247,7 @@ class GroupSigningCommunity(Community):
 				return
 		next_round = payload.round_number + 1
 		if payload.success and next_round <= 3:
+			# This looks convoluted to me, but I think it means whoever submitted the last round requests the next challenge
 			requester_hex = self.member_pubkeys_hex[next_round - 2]
 			if self.my_pubkey_hex == requester_hex:
 				self.ez_send(peer, ChallengeRequestPayload(GROUP_ID))
