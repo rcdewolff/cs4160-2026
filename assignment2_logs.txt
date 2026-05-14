@@ -1,0 +1,33 @@
+Joining Lab 2 community.
+Local public key: redacted
+Local member: 3
+Teammate member 2 found: UDPv4Address(ip=redacted, port=redacted)
+Verified server found: UDPv4Address(ip=redacted, port=redacted)
+Teammate member 1 found: UDPv4Address(ip=redacted, port=redacted)
+Team nonce received!!! Round: 1
+here
+here2
+Nonce relay received for round 1 from member 1.
+Round 1 nonce installed. Submitter: member 1.
+Added own signature for round 1.
+Sent signature for round 1 to member 1.
+Signature ACK received for round 1.
+Team nonce received!!! Round: 2
+here
+here2
+Nonce relay received for round 2 from member 1.
+Round 2 nonce installed. Submitter: member 2.
+Added own signature for round 2.
+Sent signature for round 2 to member 2.
+Signature ACK received for round 2.
+Team nonce received!!! Round: 3
+here
+here2
+Nonce relay received for round 3 from member 2.
+Round 3 nonce installed. Submitter: member 3.
+Added own signature for round 3.
+Accepted signature from member 2 for round 3 (2/3).
+Accepted signature from member 1 for round 3 (3/3).
+Submitted bundle for round 3.
+Round result: success=True, round=3, completed=3, message=Round 3 recorded at 0.18s of 10s — all 3 rounds done
+All 3 rounds completed.
