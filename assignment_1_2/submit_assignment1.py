@@ -1,7 +1,7 @@
 import asyncio
 import json
 from dataclasses import dataclass
-from mine_pow import leading_zero_bits, compute_digest
+from assignment_1_2.mine_pow import leading_zero_bits, compute_digest
 
 from ipv8.peer import Peer
 from ipv8.community import Community
