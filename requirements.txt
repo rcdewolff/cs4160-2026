@@ -1,0 +1,2 @@
+pyipv8 # Librosa installed manually
+cryptography < 47.0.0
