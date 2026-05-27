@@ -2,3 +2,5 @@
 pow_result.json
 .venv/
 __pycache__/
+assignment2_command.txt
+.env
