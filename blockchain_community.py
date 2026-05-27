@@ -1,50 +1,33 @@
-from ipv8.community import Community
+import os
+
+from ipv8.community import Community, CommunitySettings
+from ipv8.keyvault.crypto import default_eccrypto
 from ipv8.lazy_community import lazy_wrapper
 from ipv8.messaging.lazy_payload import VariablePayload, vp_compile
 from ipv8.peer import Peer
 
+from blockchain_utils import (
+	Block,
+	BlockHeader,
+	HASH_SIZE,
+	block_hash,
+	has_valid_pow,
+	split_tx_hashes,
+	tx_hash,
+	txs_hash,
+)
 
-DEFAULT_REGISTRATION_COMMUNITY_ID_HEX = "4c616233426c6f636b636861696e323032365057"
+
 DEFAULT_SERVER_PUBLIC_KEY_HEX = (
 	"4c69624e61434c504b3ae3fc099fb56ca3b5e1de9a1c843387f2acdbb78b1bd4"
 	"350ffde518068a0d246344b10d0d8c355fd0d76873e7d7f7838f3715e025af08f"
 	"791324495e083331ce6"
 )
+PUBLIC_KEY = os.environ.get("PUB_KEY", None)
+PUBLIC_KEY_MEMBER1 = os.environ.get("PUB_KEY_MEMBER1", None)
+PUBLIC_KEY_MEMBER2 = os.environ.get("PUB_KEY_MEMBER2", None)
 
-
-# Registration community payloads.
-@vp_compile
-class RegisterBlockchainPayload(VariablePayload):
-	msg_id = 1
-
-	format_list = ["varlenHutf8", "varlenH"]
-	names = ["group_id", "community_id"]
-
-
-@vp_compile
-class RegisterBlockchainResponsePayload(VariablePayload):
-	msg_id = 2
-
-	format_list = ["?", "varlenHutf8"]
-	names = ["success", "message"]
-
-
-class RegistrationCommunity(Community):
-	community_id = bytes.fromhex(DEFAULT_REGISTRATION_COMMUNITY_ID_HEX)
-
-	def __init__(self, settings):
-		super().__init__(settings)
-
-		self.add_message_handler(RegisterBlockchainPayload, self.on_register_blockchain)
-		self.add_message_handler(RegisterBlockchainResponsePayload, self.on_register_blockchain_response)
-
-	@lazy_wrapper(RegisterBlockchainPayload)
-	def on_register_blockchain(self, peer: Peer, payload: RegisterBlockchainPayload):
-		pass
-
-	@lazy_wrapper(RegisterBlockchainResponsePayload)
-	def on_register_blockchain_response(self, peer: Peer, payload: RegisterBlockchainResponsePayload):
-		pass
+ALLOWED_KEY_HEXES = [PUBLIC_KEY, PUBLIC_KEY_MEMBER1, PUBLIC_KEY_MEMBER2, DEFAULT_SERVER_PUBLIC_KEY_HEX]
 
 
 # Blockchain community payloads.
@@ -104,12 +87,24 @@ class BlockResponsePayload(VariablePayload):
 		"tx_hashes",
 	]
 
+class BlockChainCommunitySettings(CommunitySettings):
+	allowed_key_hexes: set[str]
 
 class BlockchainCommunity(Community):
 	community_id = bytes(20)
+	settings_class = BlockChainCommunitySettings
 
 	def __init__(self, settings):
 		super().__init__(settings)
+
+		self.crypto = default_eccrypto
+		self.allowed_key_hexes = set(settings.allowed_key_hexes) or set(ALLOWED_KEY_HEXES)
+
+		self.mempool = []
+		self.mempool_set = set()
+		self.chain = []
+		self.peer_heights = {}
+		self._init_genesis()
 
 		self.add_message_handler(SubmitTransactionPayload, self.on_submit_transaction)
 		self.add_message_handler(SubmitTransactionResponsePayload, self.on_submit_transaction_response)
@@ -118,9 +113,61 @@ class BlockchainCommunity(Community):
 		self.add_message_handler(GetBlockPayload, self.on_get_block)
 		self.add_message_handler(BlockResponsePayload, self.on_block_response)
 
+	def _is_approved_peer(self, peer: Peer) -> bool:
+		return peer.public_key.key_to_bin().hex() in self.allowed_key_hexes
+
+	def _init_genesis(self):
+		genesis_txs_hash = txs_hash([])
+		genesis_header = BlockHeader(
+			prev_hash=b"\x00" * HASH_SIZE,
+			txs_hash=genesis_txs_hash,
+			timestamp=0,
+			difficulty=0,
+			nonce=0,
+		)
+		self.chain.append(Block(header=genesis_header, tx_hashes=[]))
+
 	@lazy_wrapper(SubmitTransactionPayload)
 	def on_submit_transaction(self, peer: Peer, payload: SubmitTransactionPayload):
-		pass
+		if not self._is_approved_peer(peer):
+			return
+
+		if payload.sender_key.hex() not in self.allowed_key_hexes:
+			self.ez_send(
+				peer,
+				SubmitTransactionResponsePayload(False, b"", "sender not allowed"),
+			)
+			return
+
+		message = (
+			payload.sender_key
+			+ payload.data
+			+ payload.timestamp.to_bytes(8, "big", signed=False)
+		)
+		try:
+			signer_key = self.crypto.key_from_public_bin(payload.sender_key)
+		except Exception:
+			self.ez_send(
+				peer,
+				SubmitTransactionResponsePayload(False, b"", "bad sender key"),
+			)
+			return
+
+		if not self.crypto.is_valid_signature(signer_key, message, payload.signature):
+			self.ez_send(
+				peer,
+				SubmitTransactionResponsePayload(False, b"", "invalid signature"),
+			)
+			return
+
+		tx_digest = tx_hash(payload.sender_key, payload.data, payload.timestamp, payload.signature)
+		if tx_digest not in self.mempool_set:
+			self.mempool.append(tx_digest)
+			self.mempool_set.add(tx_digest)
+		self.ez_send(
+			peer,
+			SubmitTransactionResponsePayload(True, tx_digest, "accepted"),
+		)
 
 	@lazy_wrapper(SubmitTransactionResponsePayload)
 	def on_submit_transaction_response(
@@ -128,20 +175,96 @@ class BlockchainCommunity(Community):
 		peer: Peer,
 		payload: SubmitTransactionResponsePayload,
 	):
-		pass
+		if not self._is_approved_peer(peer):
+			return
+		self.last_tx_response = payload
 
 	@lazy_wrapper(GetChainHeightPayload)
 	def on_get_chain_height(self, peer: Peer, payload: GetChainHeightPayload):
-		pass
+		if not self._is_approved_peer(peer):
+			return
+
+		tip = self.chain[-1]
+		self.ez_send(
+			peer,
+			ChainHeightResponsePayload(payload.request_id, len(self.chain) - 1, tip.header.hash()),
+		)
 
 	@lazy_wrapper(ChainHeightResponsePayload)
 	def on_chain_height_response(self, peer: Peer, payload: ChainHeightResponsePayload):
-		pass
+		if not self._is_approved_peer(peer):
+			return
+		self.peer_heights[peer.public_key.key_to_bin().hex()] = (payload.height, payload.tip_hash)
 
 	@lazy_wrapper(GetBlockPayload)
 	def on_get_block(self, peer: Peer, payload: GetBlockPayload):
-		pass
+		if not self._is_approved_peer(peer):
+			return
+		if payload.height < 0 or payload.height >= len(self.chain):
+			return
+
+		block = self.chain[payload.height]
+		tx_hashes_blob = b"".join(block.tx_hashes)
+		self.ez_send(
+			peer,
+			BlockResponsePayload(
+				payload.height,
+				block.header.prev_hash,
+				block.header.txs_hash,
+				block.header.timestamp,
+				block.header.difficulty,
+				block.header.nonce,
+				block.header.hash(),
+				tx_hashes_blob,
+			),
+		)
 
 	@lazy_wrapper(BlockResponsePayload)
 	def on_block_response(self, peer: Peer, payload: BlockResponsePayload):
-		pass
+		if not self._is_approved_peer(peer):
+			return
+		if payload.height < 0:
+			return
+		if len(payload.prev_hash) != HASH_SIZE or len(payload.txs_hash) != HASH_SIZE:
+			return
+		if len(payload.block_hash) != HASH_SIZE:
+			return
+		try:
+			body_hashes = split_tx_hashes(payload.tx_hashes)
+		except ValueError:
+			return
+
+		expected_header_hash = block_hash(
+			payload.prev_hash,
+			payload.txs_hash,
+			payload.timestamp,
+			payload.difficulty,
+			payload.nonce,
+		)
+		if expected_header_hash != payload.block_hash:
+			return
+		if not has_valid_pow(expected_header_hash, payload.difficulty):
+			return
+		if txs_hash(body_hashes) != payload.txs_hash:
+			return
+
+		if payload.height != len(self.chain):
+			return
+		if payload.prev_hash != self.chain[-1].header.hash():
+			return
+
+		header = BlockHeader(
+			prev_hash=payload.prev_hash,
+			txs_hash=payload.txs_hash,
+			timestamp=payload.timestamp,
+			difficulty=payload.difficulty,
+			nonce=payload.nonce,
+		)
+		self.chain.append(Block(header=header, tx_hashes=body_hashes))
+		for txh in body_hashes:
+			if txh in self.mempool_set:
+				self.mempool_set.remove(txh)
+				try:
+					self.mempool.remove(txh)
+				except ValueError:
+					pass
