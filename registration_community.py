@@ -1,0 +1,47 @@
+import os
+
+from ipv8.community import Community
+from ipv8.lazy_community import lazy_wrapper
+from ipv8.messaging.lazy_payload import VariablePayload, vp_compile
+from ipv8.peer import Peer
+
+DEFAULT_REGISTRATION_COMMUNITY_ID_HEX = "4c616233426c6f636b636861696e323032365057"
+DEFAULT_SERVER_PUBLIC_KEY_HEX = (
+	"4c69624e61434c504b3ae3fc099fb56ca3b5e1de9a1c843387f2acdbb78b1bd4"
+	"350ffde518068a0d246344b10d0d8c355fd0d76873e7d7f7838f3715e025af08f"
+	"791324495e083331ce6"
+)
+
+# Registration community payloads.
+@vp_compile
+class RegisterBlockchainPayload(VariablePayload):
+	msg_id = 1
+
+	format_list = ["varlenHutf8", "varlenH"]
+	names = ["group_id", "community_id"]
+
+
+@vp_compile
+class RegisterBlockchainResponsePayload(VariablePayload):
+	msg_id = 2
+
+	format_list = ["?", "varlenHutf8"]
+	names = ["success", "message"]
+
+
+class RegistrationCommunity(Community):
+	community_id = bytes.fromhex(DEFAULT_REGISTRATION_COMMUNITY_ID_HEX)
+
+	def __init__(self, settings):
+		super().__init__(settings)
+
+		self.add_message_handler(RegisterBlockchainPayload, self.on_register_blockchain)
+		self.add_message_handler(RegisterBlockchainResponsePayload, self.on_register_blockchain_response)
+
+	@lazy_wrapper(RegisterBlockchainPayload)
+	def on_register_blockchain(self, peer: Peer, payload: RegisterBlockchainPayload):
+		pass
+
+	@lazy_wrapper(RegisterBlockchainResponsePayload)
+	def on_register_blockchain_response(self, peer: Peer, payload: RegisterBlockchainResponsePayload):
+		pass
