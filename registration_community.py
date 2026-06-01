@@ -38,6 +38,7 @@ class RegistrationCommunity(Community):
 		self.add_message_handler(RegisterBlockchainPayload, self.on_register_blockchain)
 		self.add_message_handler(RegisterBlockchainResponsePayload, self.on_register_blockchain_response)
 
+<<<<<<< HEAD
 		self.group_id = None
 		self.blockchain_community_id = None
 		self.registered = False
@@ -71,6 +72,15 @@ class RegistrationCommunity(Community):
 			)
 		else:
 			print("[Registration] Waiting for server peer...")
+=======
+	def _is_server_peer(self, peer: Peer) -> bool:
+		return peer.public_key.key_to_bin().hex() == DEFAULT_SERVER_PUBLIC_KEY_HEX
+
+	def register_blockchain(self, server_peer: Peer, group_id: str, community_id: bytes):
+		if not self._is_server_peer(server_peer):
+			return
+		self.ez_send(server_peer, RegisterBlockchainPayload(group_id, community_id))
+>>>>>>> 7bde7ea (Implement Track 3: Person C Registration Community logic)
 
 	@lazy_wrapper(RegisterBlockchainPayload)
 	def on_register_blockchain(self, peer: Peer, payload: RegisterBlockchainPayload):
@@ -79,6 +89,7 @@ class RegistrationCommunity(Community):
 
 	@lazy_wrapper(RegisterBlockchainResponsePayload)
 	def on_register_blockchain_response(self, peer: Peer, payload: RegisterBlockchainResponsePayload):
+<<<<<<< HEAD
 		if peer.public_key.key_to_bin().hex() != DEFAULT_SERVER_PUBLIC_KEY_HEX:
 			return
 
@@ -86,3 +97,12 @@ class RegistrationCommunity(Community):
 		if payload.success:
 			self.registered = True
 			self.replace_task("attempt_registration", None)
+=======
+		if not self._is_server_peer(peer):
+			return
+		
+		if payload.success:
+			self.logger.info(f"Successfully registered blockchain: {payload.message}")
+		else:
+			self.logger.error(f"Failed to register blockchain: {payload.message}")
+>>>>>>> 7bde7ea (Implement Track 3: Person C Registration Community logic)
