@@ -38,10 +38,24 @@ class RegistrationCommunity(Community):
 		self.add_message_handler(RegisterBlockchainPayload, self.on_register_blockchain)
 		self.add_message_handler(RegisterBlockchainResponsePayload, self.on_register_blockchain_response)
 
+	def _is_server_peer(self, peer: Peer) -> bool:
+		return peer.public_key.key_to_bin().hex() == DEFAULT_SERVER_PUBLIC_KEY_HEX
+
+	def register_blockchain(self, server_peer: Peer, group_id: str, community_id: bytes):
+		if not self._is_server_peer(server_peer):
+			return
+		self.ez_send(server_peer, RegisterBlockchainPayload(group_id, community_id))
+
 	@lazy_wrapper(RegisterBlockchainPayload)
 	def on_register_blockchain(self, peer: Peer, payload: RegisterBlockchainPayload):
 		pass
 
 	@lazy_wrapper(RegisterBlockchainResponsePayload)
 	def on_register_blockchain_response(self, peer: Peer, payload: RegisterBlockchainResponsePayload):
-		pass
+		if not self._is_server_peer(peer):
+			return
+		
+		if payload.success:
+			self.logger.info(f"Successfully registered blockchain: {payload.message}")
+		else:
+			self.logger.error(f"Failed to register blockchain: {payload.message}")
