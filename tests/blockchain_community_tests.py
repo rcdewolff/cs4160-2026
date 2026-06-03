@@ -26,8 +26,8 @@ class BlockchainCommunityTests(TestBase[BlockchainCommunity]):
           difficulty=0,
           nonce=0,
         )
-        self.assertEqual(len(self.overlay(0).chain), 1)
-        self.assertEqual(self.overlay(0).chain[0].header, first_block)
+        self.assertEqual(len(self.overlay(0).blockchain.get_chain(self.overlay(0).blockchain.tip)), 1)
+        self.assertEqual(self.overlay(0).blockchain.get_chain(self.overlay(0).blockchain.tip)[0].header, first_block)
 
     async def tearDown(self):
         await super().tearDown()
