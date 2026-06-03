@@ -9,6 +9,7 @@ from ipv8.lazy_community import lazy_wrapper
 from ipv8.messaging.lazy_payload import VariablePayload, vp_compile
 from ipv8.peer import Peer
 
+from blockchain import Blockchain
 from blockchain_utils import (
 	Block,
 	BlockHeader,
@@ -19,6 +20,7 @@ from blockchain_utils import (
 	tx_hash,
 	txs_hash,
 )
+from mempool import Mempool
 
 
 # Proof-of-work difficulty (leading zero bits) every node mines at. All three nodes MUST share
@@ -153,7 +155,9 @@ class BlockchainCommunity(Community):
 		self._req_counter = 0
 		self.last_tx_response = None
 
-		self._init_genesis()
+		# self.mempool = Mempool()
+		# self.blockchain = Blockchain(self._init_genesis())
+		# self.peer_heights = {}
 
 		self.add_message_handler(SubmitTransactionPayload, self.on_submit_transaction)
 		self.add_message_handler(SubmitTransactionResponsePayload, self.on_submit_transaction_response)
@@ -196,7 +200,7 @@ class BlockchainCommunity(Community):
 			if self._is_approved_peer(peer):
 				self.ez_send(peer, gossip)
 
-	def _init_genesis(self) -> None:
+	def _init_genesis(self) -> Block:
 		genesis_header = BlockHeader(
 			prev_hash=b"\x00" * HASH_SIZE,
 			txs_hash=txs_hash([]),
@@ -204,12 +208,7 @@ class BlockchainCommunity(Community):
 			difficulty=0,
 			nonce=0,
 		)
-		genesis = Block(header=genesis_header, tx_hashes=[])
-		gh = genesis_header.hash()
-		self.blocks[gh] = genesis
-		self.height_by_hash[gh] = 0
-		self.best_tip = gh
-		self.chain = [genesis]
+		return Block(header=genesis_header, tx_hashes=[])
 
 	# --- Consensus core --------------------------------------------------------------------
 
@@ -449,7 +448,7 @@ class BlockchainCommunity(Community):
 	def on_get_block(self, peer: Peer, payload: GetBlockPayload):
 		if not self._is_approved_peer(peer):
 			return
-		if payload.height < 0 or payload.height >= len(self.chain):
+		if payload.height < 0 or payload.height > self.blockchain.chain_height:
 			return
 
 		block = self.chain[payload.height]
