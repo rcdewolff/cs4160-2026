@@ -8,6 +8,7 @@ from blockchain_community import (
 	BlockchainCommunity,
 	BlockResponsePayload,
 	SubmitTransactionPayload,
+	TransactionGossipPayload,
 )
 from blockchain_utils import Block, BlockHeader, HASH_SIZE, mine_nonce, tx_hash, txs_hash
 
@@ -26,11 +27,11 @@ class BlockchainCommunityTests(TestBase[BlockchainCommunity]):
 		blockchain_community.DIFFICULTY = 0
 		self.initialize(
 			overlay_class=BlockchainCommunity,
-			node_count=2,
+			node_count=3,
 			settings=BlockChainCommunitySettings(allowed_key_hexes=set()),
 		)
-		keys = {self.overlay(i).my_peer.public_key.key_to_bin().hex() for i in range(2)}
-		for i in range(2):
+		keys = {self.overlay(i).my_peer.public_key.key_to_bin().hex() for i in range(3)}
+		for i in range(3):
 			self.overlay(i).allowed_key_hexes |= keys
 
 	async def tearDown(self):
@@ -39,13 +40,14 @@ class BlockchainCommunityTests(TestBase[BlockchainCommunity]):
 
 	def test_assignment_message_ids_and_genesis(self):
 		self.assertEqual([payload.msg_id for payload in ASSIGNMENT_MESSAGE_PAYLOADS], [1, 2, 3, 4, 5, 6])
+		self.assertEqual([msg_id in TransactionGossipPayload for msg_id in [7]], [True])
 		node = self.overlay(0)
 		self.assertEqual(len(node.chain), 1)
 		self.assertEqual(node.height_by_hash[node.best_tip], 0)
 		self.assertEqual(node.chain[0].header.prev_hash, b"\x00" * HASH_SIZE)
 		self.assertEqual(node.chain[0].header.txs_hash, txs_hash([]))
 
-	async def test_submit_transaction_accepts_valid_signature(self):
+	async def test_submit_transaction_accepts_valid_signature_and_gossips(self):
 		sender_key = self.key_bin(0)
 		data = b"lab3-test-tx"
 		timestamp = 123
@@ -53,15 +55,36 @@ class BlockchainCommunityTests(TestBase[BlockchainCommunity]):
 		signature = default_eccrypto.create_signature(self.private_key(0), message)
 		expected_hash = tx_hash(sender_key, data, timestamp, signature)
 
-		self.overlay(0).ez_send(
-			self.peer(1),
-			SubmitTransactionPayload(sender_key, data, timestamp, signature),
-		)
-		await self.deliver_messages(timeout=0.5)
+		with self.assertReceivedBy(2, [TransactionGossipPayload]):
+			self.overlay(0).ez_send(
+				self.peer(1),
+				SubmitTransactionPayload(sender_key, data, timestamp, signature),
+			)
+			await self.deliver_messages(timeout=0.5)
 
 		self.assertIn(expected_hash, self.overlay(1).mempool_set)
+		self.assertIn(expected_hash, self.overlay(2).mempool_set)
 		self.assertTrue(self.overlay(0).last_tx_response.success)
 		self.assertEqual(self.overlay(0).last_tx_response.tx_hash, expected_hash)
+		self.assertIsNone(self.overlay(1).last_tx_response)
+		self.assertIsNone(self.overlay(2).last_tx_response)
+
+	async def test_duplicate_transaction_is_not_re_gossiped_or_reordered(self):
+		sender_key = self.key_bin(0)
+		data = b"lab3-test-tx"
+		timestamp = 123
+		message = sender_key + data + timestamp.to_bytes(8, "big", signed=False)
+		signature = default_eccrypto.create_signature(self.private_key(0), message)
+		payload = SubmitTransactionPayload(sender_key, data, timestamp, signature)
+		expected_hash = tx_hash(sender_key, data, timestamp, signature)
+
+		self.overlay(0).ez_send(self.peer(1), payload)
+		await self.deliver_messages(timeout=0.5)
+		self.overlay(0).ez_send(self.peer(1), payload)
+		await self.deliver_messages(timeout=0.5)
+
+		self.assertEqual(self.overlay(1)._tx_order.count(expected_hash), 1)
+		self.assertEqual(self.overlay(2)._tx_order.count(expected_hash), 1)
 
 	async def test_invalid_signature_is_rejected(self):
 		self.overlay(0).ez_send(
@@ -71,6 +94,7 @@ class BlockchainCommunityTests(TestBase[BlockchainCommunity]):
 		await self.deliver_messages(timeout=0.5)
 
 		self.assertEqual(self.overlay(1).mempool_set, set())
+		self.assertEqual(self.overlay(2).mempool_set, set())
 		self.assertFalse(self.overlay(0).last_tx_response.success)
 
 	async def test_block_response_adds_valid_block(self):

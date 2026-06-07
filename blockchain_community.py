@@ -106,8 +106,15 @@ ASSIGNMENT_MESSAGE_PAYLOADS = (
 	ChainHeightResponsePayload,
 	GetBlockPayload,
 	BlockResponsePayload,
-)
+	)
 
+
+@vp_compile
+class TransactionGossipPayload(VariablePayload):
+	msg_id = 7
+
+	format_list = SubmitTransactionPayload.format_list
+	names = SubmitTransactionPayload.names
 
 class BlockChainCommunitySettings(CommunitySettings):
 	allowed_key_hexes: set[str]
@@ -154,6 +161,7 @@ class BlockchainCommunity(Community):
 		self.add_message_handler(ChainHeightResponsePayload, self.on_chain_height_response)
 		self.add_message_handler(GetBlockPayload, self.on_get_block)
 		self.add_message_handler(BlockResponsePayload, self.on_block_response)
+		self.add_message_handler(TransactionGossipPayload, self.on_transaction_gossip)
 
 	def started(self) -> None:
 		# Called once by IPv8 after the overlay loads (run_node passes the ("started",) hook).
@@ -173,6 +181,20 @@ class BlockchainCommunity(Community):
 			if key_hex in self.allowed_key_hexes and key_hex != self.server_key_hex:
 				result.append(peer)
 		return result
+
+	def _gossip_transaction(self, payload, exclude_peer: Peer) -> None:
+		exclude_key = exclude_peer.public_key.key_to_bin().hex()
+		gossip = TransactionGossipPayload(
+			payload.sender_key,
+			payload.data,
+			payload.timestamp,
+			payload.signature,
+		)
+		for peer in self.get_peers():
+			if peer.public_key.key_to_bin().hex() == exclude_key:
+				continue
+			if self._is_approved_peer(peer):
+				self.ez_send(peer, gossip)
 
 	def _init_genesis(self) -> None:
 		genesis_header = BlockHeader(
@@ -281,6 +303,35 @@ class BlockchainCommunity(Community):
 		self.mempool = [t for t in self._tx_order if t in self.known_txs and t not in on_chain]
 		self.mempool_set = set(self.mempool)
 
+	def _validate_transaction_payload(self, payload) -> tuple[bool, bytes, str]:
+		if payload.timestamp < 0:
+			return False, b"", "bad timestamp"
+
+		message = (
+			payload.sender_key
+			+ payload.data
+			+ payload.timestamp.to_bytes(8, "big", signed=False)
+		)
+		try:
+			signer_key = self.crypto.key_from_public_bin(payload.sender_key)
+		except Exception:
+			return False, b"", "bad sender key"
+
+		if not self.crypto.is_valid_signature(signer_key, message, payload.signature):
+			return False, b"", "invalid signature"
+
+		return True, tx_hash(payload.sender_key, payload.data, payload.timestamp, payload.signature), "accepted"
+
+	def _add_transaction_hash(self, tx_digest: bytes) -> bool:
+		is_new = tx_digest not in self.known_txs
+		if is_new:
+			self.known_txs.add(tx_digest)
+			self._tx_order.append(tx_digest)
+		if tx_digest not in self.mempool_set:
+			self.mempool.append(tx_digest)
+			self.mempool_set.add(tx_digest)
+		return is_new
+
 	# --- Mining ----------------------------------------------------------------------------
 
 	async def _mine_loop(self) -> None:
@@ -359,33 +410,15 @@ class BlockchainCommunity(Community):
 		if not self._is_approved_peer(peer):
 			return
 
-		if payload.timestamp < 0:
-			self.ez_send(peer, SubmitTransactionResponsePayload(False, b"", "bad timestamp"))
+		success, tx_digest, message = self._validate_transaction_payload(payload)
+		if not success:
+			self.ez_send(peer, SubmitTransactionResponsePayload(False, tx_digest, message))
 			return
 
-		message = (
-			payload.sender_key
-			+ payload.data
-			+ payload.timestamp.to_bytes(8, "big", signed=False)
-		)
-		try:
-			signer_key = self.crypto.key_from_public_bin(payload.sender_key)
-		except Exception:
-			self.ez_send(peer, SubmitTransactionResponsePayload(False, b"", "bad sender key"))
-			return
-
-		if not self.crypto.is_valid_signature(signer_key, message, payload.signature):
-			self.ez_send(peer, SubmitTransactionResponsePayload(False, b"", "invalid signature"))
-			return
-
-		tx_digest = tx_hash(payload.sender_key, payload.data, payload.timestamp, payload.signature)
-		if tx_digest not in self.known_txs:
-			self.known_txs.add(tx_digest)
-			self._tx_order.append(tx_digest)
-		if tx_digest not in self.mempool_set:
-			self.mempool.append(tx_digest)
-			self.mempool_set.add(tx_digest)
-		self.ez_send(peer, SubmitTransactionResponsePayload(True, tx_digest, "accepted"))
+		is_new = self._add_transaction_hash(tx_digest)
+		if is_new:
+			self._gossip_transaction(payload, peer)
+		self.ez_send(peer, SubmitTransactionResponsePayload(True, tx_digest, message))
 
 	@lazy_wrapper(SubmitTransactionResponsePayload)
 	def on_submit_transaction_response(self, peer: Peer, payload: SubmitTransactionResponsePayload):
@@ -463,3 +496,15 @@ class BlockchainCommunity(Community):
 			return
 
 		self.add_block(Block(header=header, tx_hashes=body_hashes))
+
+	@lazy_wrapper(TransactionGossipPayload)
+	def on_transaction_gossip(self, peer: Peer, payload: TransactionGossipPayload):
+		if not self._is_approved_peer(peer):
+			return
+
+		success, tx_digest, _message = self._validate_transaction_payload(payload)
+		if not success:
+			return
+
+		if self._add_transaction_hash(tx_digest):
+			self._gossip_transaction(payload, peer)
