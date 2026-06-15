@@ -50,7 +50,7 @@ async def main() -> None:
 	parser.add_argument("--key", type=str, default="lab1_key.pem", help="Path to private key PEM file")
 	parser.add_argument("--port", type=int, default=8090, help="IPv8 listening port")
 	parser.add_argument("--group-id", type=str, required=True, help="Lab 2 Group ID")
-	parser.add_argument("--community-id", type=str, default="68726973746F7261706861656C6A65726F656E31", required=True, help="20-byte custom blockchain community ID in hex (40 chars)")
+	parser.add_argument("--community-id", type=str, default="68726973746F7261706861656C6A65726F656E31", help="20-byte custom blockchain community ID in hex (40 chars)")
 	parser.add_argument("--teammates", type=str, default="", help="Comma-separated public key hexes of teammates")
 	parser.add_argument("--server-key", type=str, default=DEFAULT_SERVER_PUBLIC_KEY_HEX, help="Server public key hex")
 	parser.add_argument("--register", action="store_true", help="The person who registers the group")

@@ -85,4 +85,4 @@ class RegistrationCommunity(Community):
 		print(f"[Registration] Response from server: success={payload.success}, message={payload.message}")
 		if payload.success:
 			self.registered = True
-			self.replace_task("attempt_registration", None)
+			self.cancel_pending_task("attempt_registration")

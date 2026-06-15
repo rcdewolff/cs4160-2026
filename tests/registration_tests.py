@@ -49,7 +49,7 @@ class TestRegistrationCommunity(unittest.IsolatedAsyncioTestCase):
 	def test_registration_success_stops_task(self):
 		settings = MagicMock()
 		community = RegistrationCommunity(settings)
-		community.replace_task = MagicMock()
+		community.cancel_pending_task = MagicMock()
 
 		server_peer = MagicMock()
 		server_peer.public_key.key_to_bin().hex.return_value = DEFAULT_SERVER_PUBLIC_KEY_HEX
@@ -59,12 +59,12 @@ class TestRegistrationCommunity(unittest.IsolatedAsyncioTestCase):
 		community.on_register_blockchain_response.__wrapped__(community, server_peer, payload)
 
 		self.assertTrue(community.registered)
-		community.replace_task.assert_called_once_with("attempt_registration", None)
+		community.cancel_pending_task.assert_called_once_with("attempt_registration")
 
 	def test_registration_failure_keeps_task_running(self):
 		settings = MagicMock()
 		community = RegistrationCommunity(settings)
-		community.replace_task = MagicMock()
+		community.cancel_pending_task = MagicMock()
 
 		server_peer = MagicMock()
 		server_peer.public_key.key_to_bin().hex.return_value = DEFAULT_SERVER_PUBLIC_KEY_HEX
@@ -74,7 +74,7 @@ class TestRegistrationCommunity(unittest.IsolatedAsyncioTestCase):
 		community.on_register_blockchain_response.__wrapped__(community, server_peer, payload)
 
 		self.assertFalse(community.registered)
-		community.replace_task.assert_not_called()
+		community.cancel_pending_task.assert_not_called()
 
 if __name__ == "__main__":
 	unittest.main()
