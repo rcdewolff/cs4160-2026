@@ -156,7 +156,7 @@ class BlockchainCommunity(Community):
 		self.last_tx_response = None
 
 		# self.mempool = Mempool()
-		# self.blockchain = Blockchain(self._init_genesis())
+		# self.blockchain = Blockchain(self._init_genesis(), self.mempool)
 		# self.peer_heights = {}
 
 		self.add_message_handler(SubmitTransactionPayload, self.on_submit_transaction)

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from blockchain_utils import Block, has_valid_pow
+from mempool import Mempool
 
 
 class Blockchain:
-    def __init__(self, genesis: Block) -> None:
+    def __init__(self, genesis: Block, mempool: Mempool) -> None:
         self.genesis = genesis
         self.genesis_hash = genesis.header.hash()
+
+        self.mempool = mempool
 
         self.blocks: dict[bytes, Block] = {self.genesis_hash: genesis}
         self.children: dict[bytes, list[bytes]] = {self.genesis_hash: []}
@@ -81,5 +84,22 @@ class Blockchain:
         return None
 
     def reorganize(self, new_tip: bytes) -> None:
+        fork_point = self.find_fork_point(self.tip, new_tip)
+        if fork_point is None:
+            fork_point = self.genesis_hash
+        
+        cur = self.tip
+        while cur is not fork_point:
+            cur_block = self.blocks[cur]
+            for tx in cur_block.tx_hashes:
+                self.mempool.add(tx, remove_from_chain=True)
+            cur = cur_block.header.prev_hash
+
+        cur = new_tip
+        while cur is not fork_point:
+            cur_block = self.blocks[cur]
+            self.mempool.remove_confirmed(cur_block.tx_hashes)
+            cur = cur_block.header.prev_hash
+
         self.tip = new_tip
         self.chain_height = len(self.get_chain(new_tip)) - 1
