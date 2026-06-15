@@ -1,6 +1,4 @@
-import os
-
-from ipv8.community import Community
+from ipv8.community import Community, CommunitySettings
 from ipv8.lazy_community import lazy_wrapper
 from ipv8.messaging.lazy_payload import VariablePayload, vp_compile
 from ipv8.peer import Peer
@@ -29,8 +27,13 @@ class RegisterBlockchainResponsePayload(VariablePayload):
 	names = ["success", "message"]
 
 
+class RegistrationCommunitySettings(CommunitySettings):
+	should_register: bool = False
+
+
 class RegistrationCommunity(Community):
 	community_id = bytes.fromhex(DEFAULT_REGISTRATION_COMMUNITY_ID_HEX)
+	settings_class = RegistrationCommunitySettings
 
 	def __init__(self, settings):
 		super().__init__(settings)
@@ -38,10 +41,55 @@ class RegistrationCommunity(Community):
 		self.add_message_handler(RegisterBlockchainPayload, self.on_register_blockchain)
 		self.add_message_handler(RegisterBlockchainResponsePayload, self.on_register_blockchain_response)
 
+		self.group_id = None
+		self.blockchain_community_id = None
+		self.registered = False
+		self.should_register = getattr(settings, "should_register", False) is True
+
+	def started(self) -> None:
+		if not self.should_register:
+			print("[Registration] Overlay loaded; automatic registration disabled.")
+			return
+		self.register_task("attempt_registration", self.attempt_registration, interval=2.0, delay=1.0)
+
+	def set_registration_details(self, group_id: str, blockchain_community_id: bytes) -> None:
+		self.group_id = group_id
+		self.blockchain_community_id = blockchain_community_id
+
+	def attempt_registration(self) -> None:
+		if self.registered:
+			self.cancel_pending_task("attempt_registration")
+			return
+
+		if not self.group_id or not self.blockchain_community_id:
+			return
+
+		server_peer = None
+		for peer in self.get_peers():
+			if peer.public_key.key_to_bin().hex() == DEFAULT_SERVER_PUBLIC_KEY_HEX:
+				server_peer = peer
+				break
+
+		if server_peer:
+			print(f"[Registration] Server found ({server_peer.public_key.key_to_bin().hex()[:10]}...). Registering...")
+			self.ez_send(
+				server_peer,
+				RegisterBlockchainPayload(self.group_id, self.blockchain_community_id),
+			)
+		else:
+			print("[Registration] Waiting for server peer...")
+
 	@lazy_wrapper(RegisterBlockchainPayload)
 	def on_register_blockchain(self, peer: Peer, payload: RegisterBlockchainPayload):
+		# Server side (not implemented on node)
 		pass
 
 	@lazy_wrapper(RegisterBlockchainResponsePayload)
 	def on_register_blockchain_response(self, peer: Peer, payload: RegisterBlockchainResponsePayload):
-		pass
+		if peer.public_key.key_to_bin().hex() != DEFAULT_SERVER_PUBLIC_KEY_HEX:
+			return
+
+		print(f"[Registration] Response from server: success={payload.success}, message={payload.message}")
+		if payload.success:
+			self.registered = True
+			self.cancel_pending_task("attempt_registration")
