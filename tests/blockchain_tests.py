@@ -1,4 +1,5 @@
 import unittest
+import shutil
 
 from blockchain import Blockchain
 from blockchain_utils import (
@@ -10,6 +11,10 @@ from mempool import Mempool
 
 class TestBlockchain(unittest.TestCase):
     def setUp(self):
+        try:
+            shutil.rmtree("temp_chaindata") # Careful changing this, rm -rf equivalent
+        except FileNotFoundError:
+            pass
         genesis_header = BlockHeader(
             prev_hash=b"\x00" * 32,
             txs_hash=b"\x00" * 32,
@@ -19,7 +24,7 @@ class TestBlockchain(unittest.TestCase):
         )
         self.genesis_block = Block(genesis_header, [])
         self.mempool = Mempool()
-        self.blockchain = Blockchain(self.genesis_block, self.mempool, difficulty=0)
+        self.blockchain = Blockchain(self.genesis_block, self.mempool, difficulty=0, data_dir="temp_chaindata")
 
     def test_add_valid_block(self):
         # Difficulty 0, any hash is valid.
@@ -89,7 +94,7 @@ class TestBlockchain(unittest.TestCase):
         block2 = Block(header2, [])
         self.blockchain.add_block(block2)
 
-        chain = self.blockchain.get_chain(block2.header.hash())
+        chain = self.blockchain.chain
         self.assertEqual(len(chain), 3)
         self.assertEqual(chain[2].header.hash(), block2.header.hash())
         self.assertEqual(chain[1].header.hash(), block1.header.hash())

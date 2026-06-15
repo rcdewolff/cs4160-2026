@@ -4,3 +4,6 @@ pow_result.json
 __pycache__/
 assignment2_command.txt
 .env
+run_node_command.md
+chaindata/
+temp_chaindata/

@@ -16,3 +16,4 @@ SYNC_DOWN_WINDOW = 16
 FETCH_BATCH = 64
 # Upper bound on buffered out-of-order (orphan) blocks.
 PENDING_CAP = 1000
+PRUNE_DEPTH = 1024

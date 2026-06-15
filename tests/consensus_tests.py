@@ -39,7 +39,8 @@ class ConsensusLogicTests(TestBase[BlockchainCommunity]):
 		self.initialize(
 			overlay_class=BlockchainCommunity,
 			node_count=2,
-			settings=BlockChainCommunitySettings(allowed_key_hexes=set()),
+			settings=BlockChainCommunitySettings(allowed_key_hexes=set(),
+																				data_dir=self.temporary_directory()),
 		)
 
 	async def tearDown(self):

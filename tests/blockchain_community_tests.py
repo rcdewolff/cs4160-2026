@@ -21,14 +21,15 @@ def make_block(parent_hash: bytes, tx_hashes: list[bytes], difficulty: int, time
 
 
 class BlockchainCommunityTests(TestBase[BlockchainCommunity]):
-	def setUp(self):
+	async def setUp(self):
 		super().setUp()
 		self._orig_difficulty = blockchain_community.DIFFICULTY
 		blockchain_community.DIFFICULTY = 0
 		self.initialize(
 			overlay_class=BlockchainCommunity,
 			node_count=3,
-			settings=BlockChainCommunitySettings(allowed_key_hexes=set()),
+			settings=BlockChainCommunitySettings(allowed_key_hexes=set(), 
+																						data_dir=self.temporary_directory()),
 		)
 		keys = {self.overlay(i).my_peer.public_key.key_to_bin().hex() for i in range(3)}
 		for i in range(3):

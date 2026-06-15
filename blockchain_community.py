@@ -109,6 +109,7 @@ class TransactionGossipPayload(VariablePayload):
 
 class BlockChainCommunitySettings(CommunitySettings):
 	allowed_key_hexes: set[str]
+	data_dir: str
 
 
 class BlockchainCommunity(Community):
@@ -120,6 +121,7 @@ class BlockchainCommunity(Community):
 
 		self.crypto = default_eccrypto
 		self.allowed_key_hexes = set(getattr(settings, "allowed_key_hexes", set()))
+		self._data_dir = getattr(settings, "data_dir", "chaindata")
 		# The grading server is an approved peer (it queries us) but not a chain peer: we never
 		# poll it or push our tip to it, we only answer what it asks.
 		self.server_key_hex = getattr(settings, "server_key_hex", "")
@@ -145,7 +147,7 @@ class BlockchainCommunity(Community):
 		self.last_tx_response = None
 
 		self.mempool = Mempool()
-		self.blockchain = Blockchain(self._init_genesis(), self.mempool, DIFFICULTY)
+		self.blockchain = Blockchain(self._init_genesis(), self.mempool, DIFFICULTY, data_dir=self._data_dir)
 		# self.peer_heights = {}
 
 		self.add_message_handler(SubmitTransactionPayload, self.on_submit_transaction)
