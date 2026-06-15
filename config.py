@@ -1,6 +1,6 @@
 # Proof-of-work difficulty (leading zero bits) every node mines at. All three nodes MUST share
 # this value, the genesis layout, and the community_id, or the longest-chain rule disagrees.
-DIFFICULTY = 17
+DIFFICULTY = 22
 # Nonces tried per synchronous burst before yielding to the event loop. Keeps the CPU-bound miner
 # from starving IPv8's UDP receive and the sync loop.
 MINE_CHUNK = 20000
