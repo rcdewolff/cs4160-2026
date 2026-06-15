@@ -92,17 +92,16 @@ async def main() -> None:
 	builder.set_port(args.port)
 	builder.add_key("my peer", "curve25519", args.key)
 
-	if args.register:
-		# Add Registration Overlay only when explicitly requested. This lets all members first
-		# join the blockchain community and discover each other before one member triggers grading.
-		builder.add_overlay(
-			"RegistrationCommunity",
-			"my peer",
-			[WalkerDefinition(Strategy.RandomWalk, 10, {"timeout": 3.0})],
-			default_bootstrap_defs,
-			{},
-			[("started",)],
-		)
+	# Every node joins the registration community so it has the message handlers loaded.
+	# Only the node started with --register schedules the periodic registration task.
+	builder.add_overlay(
+		"RegistrationCommunity",
+		"my peer",
+		[WalkerDefinition(Strategy.RandomWalk, 10, {"timeout": 3.0})],
+		default_bootstrap_defs,
+		{"should_register": args.register},
+		[("started",)],
+	)
 
 	# Add Custom Blockchain Overlay
 	builder.add_overlay(
@@ -134,7 +133,7 @@ async def main() -> None:
 		elif isinstance(overlay, CustomBlockchainCommunity):
 			blockchain_overlay = overlay
 
-	if args.register and not registration_overlay:
+	if not registration_overlay:
 		print("Error: RegistrationCommunity failed to load.")
 		sys.exit(1)
 

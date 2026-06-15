@@ -29,14 +29,16 @@ class Mempool:
             self.free_txs.setdefault(txid, tx)
         return txid, is_new
     
-    def move_from_chain(self, txid: bytes) -> bytes:
+    def move_from_chain(self, txid: bytes) -> bool:
         tx = self.chain_txs.pop(txid, None)
         if tx is None:
-            raise ValueError(f"{txid} not on chain.")
+            return False
         self.add(tx)
+        return True
 
     def remove_confirmed(self, txids: Iterable[bytes]) -> None:
         txids = copy.deepcopy(txids)
         for txid in txids:
             tx: Tx = self.free_txs.pop(txid, None)
-            self.chain_txs.setdefault(txid, tx)
+            if tx is not None:
+                self.chain_txs.setdefault(txid, tx)

@@ -1,6 +1,4 @@
-import os
-
-from ipv8.community import Community
+from ipv8.community import Community, CommunitySettings
 from ipv8.lazy_community import lazy_wrapper
 from ipv8.messaging.lazy_payload import VariablePayload, vp_compile
 from ipv8.peer import Peer
@@ -29,8 +27,13 @@ class RegisterBlockchainResponsePayload(VariablePayload):
 	names = ["success", "message"]
 
 
+class RegistrationCommunitySettings(CommunitySettings):
+	should_register: bool = False
+
+
 class RegistrationCommunity(Community):
 	community_id = bytes.fromhex(DEFAULT_REGISTRATION_COMMUNITY_ID_HEX)
+	settings_class = RegistrationCommunitySettings
 
 	def __init__(self, settings):
 		super().__init__(settings)
@@ -41,8 +44,12 @@ class RegistrationCommunity(Community):
 		self.group_id = None
 		self.blockchain_community_id = None
 		self.registered = False
+		self.should_register = getattr(settings, "should_register", False) is True
 
 	def started(self) -> None:
+		if not self.should_register:
+			print("[Registration] Overlay loaded; automatic registration disabled.")
+			return
 		self.register_task("attempt_registration", self.attempt_registration, interval=2.0, delay=1.0)
 
 	def set_registration_details(self, group_id: str, blockchain_community_id: bytes) -> None:
