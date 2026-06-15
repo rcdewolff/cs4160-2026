@@ -51,7 +51,7 @@ class RegistrationCommunity(Community):
 
 	def attempt_registration(self) -> None:
 		if self.registered:
-			self.replace_task("attempt_registration", None)
+			self.cancel_pending_task("attempt_registration")
 			return
 
 		if not self.group_id or not self.blockchain_community_id:

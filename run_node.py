@@ -18,9 +18,10 @@ async def main() -> None:
 	parser.add_argument("--key", type=str, default="lab1_key.pem", help="Path to private key PEM file")
 	parser.add_argument("--port", type=int, default=8090, help="IPv8 listening port")
 	parser.add_argument("--group-id", type=str, required=True, help="Lab 2 Group ID")
-	parser.add_argument("--community-id", type=str, required=True, help="20-byte custom blockchain community ID in hex (40 chars)")
+	parser.add_argument("--community-id", type=str, default="68726973746F7261706861656C6A65726F656E31", required=True, help="20-byte custom blockchain community ID in hex (40 chars)")
 	parser.add_argument("--teammates", type=str, default="", help="Comma-separated public key hexes of teammates")
 	parser.add_argument("--server-key", type=str, default=DEFAULT_SERVER_PUBLIC_KEY_HEX, help="Server public key hex")
+	parser.add_argument("--register", action="store_true", help="The person who registers the group")
 
 	args = parser.parse_args()
 
@@ -49,21 +50,24 @@ async def main() -> None:
 	print(f"Blockchain Community ID: {args.community_id}")
 	print(f"Teammates: {teammate_hexes}")
 	print(f"Allowed Keys: {allowed_keys}")
+	print(f"Registration: {'enabled' if args.register else 'disabled'}")
 
 	# Build IPv8 configuration
 	builder = ConfigBuilder().clear_keys().clear_overlays()
 	builder.set_port(args.port)
 	builder.add_key("my peer", "curve25519", args.key)
 
-	# Add Registration Overlay
-	builder.add_overlay(
-		"RegistrationCommunity",
-		"my peer",
-		[WalkerDefinition(Strategy.RandomWalk, 10, {"timeout": 3.0})],
-		default_bootstrap_defs,
-		{},
-		[("started",)],
-	)
+	if args.register:
+		# Add Registration Overlay only when explicitly requested. This lets all members first
+		# join the blockchain community and discover each other before one member triggers grading.
+		builder.add_overlay(
+			"RegistrationCommunity",
+			"my peer",
+			[WalkerDefinition(Strategy.RandomWalk, 10, {"timeout": 3.0})],
+			default_bootstrap_defs,
+			{},
+			[("started",)],
+		)
 
 	# Add Custom Blockchain Overlay
 	builder.add_overlay(
@@ -95,7 +99,7 @@ async def main() -> None:
 		elif isinstance(overlay, CustomBlockchainCommunity):
 			blockchain_overlay = overlay
 
-	if not registration_overlay:
+	if args.register and not registration_overlay:
 		print("Error: RegistrationCommunity failed to load.")
 		sys.exit(1)
 
@@ -103,8 +107,10 @@ async def main() -> None:
 		print("Error: CustomBlockchainCommunity failed to load.")
 		sys.exit(1)
 
-	# Configure registration details
-	registration_overlay.set_registration_details(args.group_id, comm_id_bytes)
+	if args.register:
+		# Configure registration details after startup; the registration task will send once it
+		# discovers the official server peer.
+		registration_overlay.set_registration_details(args.group_id, comm_id_bytes)
 
 	# Ensure our own public key is also added to the allowed keys in the blockchain community
 	my_pubkey_hex = blockchain_overlay.my_peer.public_key.key_to_bin().hex()
