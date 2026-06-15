@@ -103,7 +103,7 @@ class BlockchainCommunity(Community):
 		self.allowed_key_hexes = set(settings.allowed_key_hexes) or set(ALLOWED_KEY_HEXES)
 
 		self.mempool = Mempool()
-		self.blockchain = Blockchain(self._init_genesis())
+		self.blockchain = Blockchain(self._init_genesis(), self.mempool)
 		self.peer_heights = {}
 
 		self.add_message_handler(SubmitTransactionPayload, self.on_submit_transaction)

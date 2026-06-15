@@ -6,6 +6,7 @@ from blockchain_utils import (
     BlockHeader,
     txs_hash,
 )
+from mempool import Mempool
 
 class TestBlockchain(unittest.TestCase):
     def setUp(self):
@@ -17,7 +18,8 @@ class TestBlockchain(unittest.TestCase):
             nonce=0,
         )
         self.genesis_block = Block(genesis_header, [])
-        self.blockchain = Blockchain(self.genesis_block)
+        self.mempool = Mempool()
+        self.blockchain = Blockchain(self.genesis_block, self.mempool)
 
     def test_add_valid_block(self):
         # Difficulty 0, any hash is valid.

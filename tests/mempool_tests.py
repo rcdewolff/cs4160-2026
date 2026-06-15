@@ -13,12 +13,12 @@ class TestMempool(unittest.TestCase):
         txid1 = self.mempool.add(tx1)
         txid2 = self.mempool.add(tx2)
 
-        self.assertIn(txid1, self.mempool.txs)
-        self.assertIn(txid2, self.mempool.txs)
+        self.assertIn(txid1, self.mempool.free_txs)
+        self.assertIn(txid2, self.mempool.free_txs)
 
         self.mempool.remove_confirmed([txid1])
-        self.assertNotIn(txid1, self.mempool.txs)
-        self.assertIn(txid2, self.mempool.txs)
+        self.assertNotIn(txid1, self.mempool.free_txs)
+        self.assertIn(txid2, self.mempool.free_txs)
 
 
 if __name__ == "__main__":
