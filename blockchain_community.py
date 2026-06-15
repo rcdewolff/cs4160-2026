@@ -20,28 +20,17 @@ from blockchain_utils import (
 	tx_hash,
 	txs_hash,
 )
-from mempool import Mempool
-
-
-# Proof-of-work difficulty (leading zero bits) every node mines at. All three nodes MUST share
-# this value, the genesis layout, and the community_id, or the longest-chain rule disagrees.
-DIFFICULTY = 17
-# Nonces tried per synchronous burst before yielding to the event loop. Keeps the CPU-bound miner
-# from starving IPv8's UDP receive and the sync loop.
-MINE_CHUNK = 20000
-# Target time between a node's own blocks (randomized). MUST stay comfortably above block
-# propagation latency (~one sync round trip) so the three chains rarely fork.
-BLOCK_INTERVAL_RANGE = (1.5, 2.5)
-# How often a node polls teammates for their height/tip (safety net; mining also pushes its tip).
-SYNC_INTERVAL = 0.5
-SYNC_DELAY = 1.0
-# When catching up, also refetch a few blocks below our tip so shallow reorgs can find a common
-# ancestor, and cap how many blocks we request per peer per tick.
-SYNC_DOWN_WINDOW = 16
-FETCH_BATCH = 64
-# Upper bound on buffered out-of-order (orphan) blocks.
-PENDING_CAP = 1000
-
+from mempool import Mempool, Tx
+from config import (
+	DIFFICULTY,
+	MINE_CHUNK,
+	BLOCK_INTERVAL_RANGE,
+	SYNC_INTERVAL,
+	SYNC_DELAY,
+	SYNC_DOWN_WINDOW,
+	FETCH_BATCH,
+	PENDING_CAP,
+)
 
 # Blockchain community payloads.
 @vp_compile
@@ -137,26 +126,26 @@ class BlockchainCommunity(Community):
 
 		# Block tree. self.chain is the canonical, height-indexed main chain; it is rebuilt by
 		# _set_tip on every reorg. Never append to it directly outside _init_genesis/_set_tip.
-		self.blocks: dict[bytes, Block] = {}
-		self.height_by_hash: dict[bytes, int] = {}
-		self.best_tip: bytes = b""
-		self.chain: list[Block] = []
+		# self.blocks: dict[bytes, Block] = {}
+		# self.height_by_hash: dict[bytes, int] = {}
+		# self.best_tip: bytes = b""
+		# self.chain: list[Block] = []
 		self.pending_blocks: dict[bytes, Block] = {}  # orphans keyed by their own block hash
 
 		# Transactions. known_txs is the never-pruned source of truth so a reorg that orphans the
 		# test transaction puts it back in the mempool to be re-mined.
-		self.known_txs: set[bytes] = set()
-		self._tx_order: list[bytes] = []
-		self.mempool: list[bytes] = []
-		self.mempool_set: set[bytes] = set()
+		# self.known_txs: set[bytes] = set()
+		# self._tx_order: list[bytes] = []
+		# self.mempool: list[bytes] = []
+		# self.mempool_set: set[bytes] = set()
 
 		# Peer sync state.
 		self.peer_heights: dict[str, tuple[int, bytes]] = {}
 		self._req_counter = 0
 		self.last_tx_response = None
 
-		# self.mempool = Mempool()
-		# self.blockchain = Blockchain(self._init_genesis(), self.mempool)
+		self.mempool = Mempool()
+		self.blockchain = Blockchain(self._init_genesis(), self.mempool, DIFFICULTY)
 		# self.peer_heights = {}
 
 		self.add_message_handler(SubmitTransactionPayload, self.on_submit_transaction)
@@ -212,21 +201,22 @@ class BlockchainCommunity(Community):
 
 	# --- Consensus core --------------------------------------------------------------------
 
-	def _block_is_valid(self, bh: bytes, block: Block) -> bool:
-		if not has_valid_pow(bh, block.header.difficulty):
-			return False
-		# Reject anything mined below the shared difficulty (defends against a buggy/cheap peer
-		# trying to win the longest-chain race or flood us with trivial blocks).
-		if block.header.difficulty < DIFFICULTY:
-			return False
-		try:
-			return txs_hash(block.tx_hashes) == block.header.txs_hash
-		except ValueError:
-			return False
+	# def _block_is_valid(self, bh: bytes, block: Block) -> bool:
+	# 	if not has_valid_pow(bh, block.header.difficulty):
+	# 		return False
+	# 	# Reject anything mined below the shared difficulty (defends against a buggy/cheap peer
+	# 	# trying to win the longest-chain race or flood us with trivial blocks).
+	# 	if block.header.difficulty < DIFFICULTY:
+	# 		return False
+	# 	try:
+	# 		return txs_hash(block.tx_hashes) == block.header.txs_hash
+	# 	except ValueError:
+	# 		return False
 
-	def _store(self, bh: bytes, block: Block, parent: bytes) -> None:
-		self.blocks[bh] = block
-		self.height_by_hash[bh] = self.height_by_hash[parent] + 1
+	# def _store(self, bh: bytes, block: Block, parent: bytes) -> None:
+	# 	self.blockchain.add_block(block)
+		# self.blocks[bh] = block
+		# self.height_by_hash[bh] = self.height_by_hash[parent] + 1
 
 	def _connect_orphans(self, root: bytes) -> list[bytes]:
 		# Connect any buffered blocks whose parent just became available (transitively). Uses a
@@ -239,9 +229,10 @@ class BlockchainCommunity(Community):
 				if orphan.header.prev_hash != parent:
 					continue
 				self.pending_blocks.pop(oh, None)
-				if oh in self.blocks:
+				if oh in self.blockchain.blocks:
 					continue
-				self._store(oh, orphan, parent)  # orphan already passed _block_is_valid when buffered
+				self.blockchain.add_block(orphan)
+				# self._store(oh, orphan, parent)  # orphan already passed _block_is_valid when buffered
 				connected.append(oh)
 				work.append(oh)
 		return connected
@@ -253,54 +244,66 @@ class BlockchainCommunity(Community):
 		completion between event-loop yields keeps the chain state consistent without locks.
 		"""
 		bh = block.header.hash()
-		if bh in self.blocks:
-			return False
-		if not self._block_is_valid(bh, block):
-			return False
-
 		parent = block.header.prev_hash
-		if parent not in self.blocks:
+		if parent not in self.blockchain.blocks:
 			if len(self.pending_blocks) < PENDING_CAP:
 				self.pending_blocks[bh] = block
 			return False
+		success = self.blockchain.add_block(block)
+		if success:
+			self._connect_orphans(bh)
+		else:
+			return False
+		return True
+		# bh = block.header.hash()
+		# if bh in self.blocks:
+		# 	return False
+		# if not self._block_is_valid(bh, block):
+		# 	return False
 
-		self._store(bh, block, parent)
-		candidates = self._connect_orphans(bh)
+		# parent = block.header.prev_hash
+		# if parent not in self.blocks:
+		# 	if len(self.pending_blocks) < PENDING_CAP:
+		# 		self.pending_blocks[bh] = block
+		# 	return False
+
+		# self._store(bh, block, parent)
+		# candidates = self._connect_orphans(bh)
 
 		# Longest-chain rule with a deterministic tie-break (smaller block hash wins) so every
 		# node converges on the same chain even when two blocks land at the same height.
-		best = self.best_tip
-		best_h = self.height_by_hash[best]
-		for cand in candidates:
-			ch = self.height_by_hash[cand]
-			if ch > best_h or (ch == best_h and cand < best):
-				best, best_h = cand, ch
-		if best != self.best_tip:
-			self._set_tip(best)
-		return True
+		# best = self.best_tip
+		# best_h = self.height_by_hash[best]
+		# for cand in candidates:
+		# 	ch = self.height_by_hash[cand]
+		# 	if ch > best_h or (ch == best_h and cand < best):
+		# 		best, best_h = cand, ch
+		# if best != self.best_tip:
+		# 	self._set_tip(best)
+		# return True
 
-	def _set_tip(self, new_tip: bytes) -> None:
-		# Rebuild the canonical chain by walking parents back to genesis (height strictly
-		# decreases each step, so this terminates), then reconcile the mempool.
-		chain_rev = []
-		node = new_tip
-		while True:
-			block = self.blocks[node]
-			chain_rev.append(block)
-			if self.height_by_hash[node] == 0:
-				break
-			node = block.header.prev_hash
-		chain_rev.reverse()
-		self.chain = chain_rev
-		self.best_tip = new_tip
-		self._reconcile_mempool()
+	# def _set_tip(self, new_tip: bytes) -> None:
+	# 	# Rebuild the canonical chain by walking parents back to genesis (height strictly
+	# 	# decreases each step, so this terminates), then reconcile the mempool.
+	# 	chain_rev = []
+	# 	node = new_tip
+	# 	while True:
+	# 		block = self.blocks[node]
+	# 		chain_rev.append(block)
+	# 		if self.height_by_hash[node] == 0:
+	# 			break
+	# 		node = block.header.prev_hash
+	# 	chain_rev.reverse()
+	# 	self.chain = chain_rev
+	# 	self.best_tip = new_tip
+	# 	self._reconcile_mempool()
 
-	def _reconcile_mempool(self) -> None:
-		on_chain = set()
-		for block in self.chain:
-			on_chain.update(block.tx_hashes)
-		self.mempool = [t for t in self._tx_order if t in self.known_txs and t not in on_chain]
-		self.mempool_set = set(self.mempool)
+	# def _reconcile_mempool(self) -> None:
+	# 	on_chain = set()
+	# 	for block in self.blockchain.chain:
+	# 		on_chain.update(block.tx_hashes)
+	# 	self.mempool = [t for t in self._tx_order if t in self.known_txs and t not in on_chain]
+	# 	self.mempool_set = set(self.mempool)
 
 	def _validate_transaction_payload(self, payload) -> tuple[bool, bytes, str]:
 		if payload.timestamp < 0:
@@ -321,14 +324,15 @@ class BlockchainCommunity(Community):
 
 		return True, tx_hash(payload.sender_key, payload.data, payload.timestamp, payload.signature), "accepted"
 
-	def _add_transaction_hash(self, tx_digest: bytes) -> bool:
-		is_new = tx_digest not in self.known_txs
-		if is_new:
-			self.known_txs.add(tx_digest)
-			self._tx_order.append(tx_digest)
-		if tx_digest not in self.mempool_set:
-			self.mempool.append(tx_digest)
-			self.mempool_set.add(tx_digest)
+	def _add_transaction_hash(self, tx: Tx) -> bool:
+		# is_new = tx_digest not in self.known_txs
+		# if is_new:
+		# 	self.known_txs.add(tx_digest)
+		# 	self._tx_order.append(tx_digest)
+		# if tx_digest not in self.mempool_set:
+		# 	self.mempool.append(tx_digest)
+		# 	self.mempool_set.add(tx_digest)
+		txid, is_new = self.mempool.add(tx)
 		return is_new
 
 	# --- Mining ----------------------------------------------------------------------------
@@ -336,8 +340,10 @@ class BlockchainCommunity(Community):
 	async def _mine_loop(self) -> None:
 		while True:
 			try:
-				parent = self.best_tip
-				body = list(self.mempool)
+				parent = self.blockchain.tip
+				# parent = self.best_tip
+				body = list(self.mempool.free_txs.keys())
+				# body = list(self.mempool)
 				commit = txs_hash(body)
 				timestamp = int(time.time())
 				difficulty = DIFFICULTY
@@ -346,7 +352,7 @@ class BlockchainCommunity(Community):
 
 				# Mine in chunks, yielding to the loop between them and aborting if a better tip
 				# arrives (which also changes the mempool we should be mining).
-				while self.best_tip == parent:
+				while self.blockchain.tip == parent:
 					try:
 						nonce, _digest = mine_nonce(
 							parent, commit, timestamp, difficulty,
@@ -361,7 +367,7 @@ class BlockchainCommunity(Community):
 							timestamp = int(time.time())
 						await asyncio.sleep(0)
 
-				if mined is not None and self.best_tip == parent:
+				if mined is not None and self.blockchain.tip == parent:
 					header = BlockHeader(
 						prev_hash=parent,
 						txs_hash=commit,
@@ -391,12 +397,12 @@ class BlockchainCommunity(Community):
 
 	def _announce_tip(self) -> None:
 		# Push our new tip to teammates so they pull immediately instead of waiting for a poll.
-		height = self.height_by_hash[self.best_tip]
+		height = self.blockchain.chain_height
 		for peer in self._teammate_peers():
-			self.ez_send(peer, ChainHeightResponsePayload(0, height, self.best_tip))
+			self.ez_send(peer, ChainHeightResponsePayload(0, height, self.blockchain.tip))
 
 	def _fetch_from(self, peer: Peer, their_h: int) -> None:
-		our_h = self.height_by_hash[self.best_tip]
+		our_h = self.blockchain.chain_height
 		start = max(0, our_h - SYNC_DOWN_WINDOW)
 		end = min(their_h, our_h + FETCH_BATCH)
 		for height in range(start, end + 1):
@@ -414,7 +420,9 @@ class BlockchainCommunity(Community):
 			self.ez_send(peer, SubmitTransactionResponsePayload(False, tx_digest, message))
 			return
 
-		is_new = self._add_transaction_hash(tx_digest)
+		tx: Tx = (payload.sender_key, payload.data, payload.timestamp, payload.signature)
+
+		is_new = self._add_transaction_hash(tx)
 		if is_new:
 			self._gossip_transaction(payload, peer)
 		self.ez_send(peer, SubmitTransactionResponsePayload(True, tx_digest, message))
@@ -429,8 +437,8 @@ class BlockchainCommunity(Community):
 	def on_get_chain_height(self, peer: Peer, payload: GetChainHeightPayload):
 		if not self._is_approved_peer(peer):
 			return
-		height = self.height_by_hash[self.best_tip]
-		self.ez_send(peer, ChainHeightResponsePayload(payload.request_id, height, self.best_tip))
+		height = self.blockchain.chain_height
+		self.ez_send(peer, ChainHeightResponsePayload(payload.request_id, height, self.blockchain.tip))
 
 	@lazy_wrapper(ChainHeightResponsePayload)
 	def on_chain_height_response(self, peer: Peer, payload: ChainHeightResponsePayload):
@@ -440,8 +448,8 @@ class BlockchainCommunity(Community):
 			return
 		self.peer_heights[peer.public_key.key_to_bin().hex()] = (payload.height, payload.tip_hash)
 		# Catch up if this peer is ahead, or on a same-height fork our tie-break prefers.
-		our_h = self.height_by_hash[self.best_tip]
-		if payload.height > our_h or (payload.height == our_h and payload.tip_hash < self.best_tip):
+		our_h = self.blockchain.chain_height
+		if payload.height > our_h or (payload.height == our_h and payload.tip_hash < self.blockchain.tip):
 			self._fetch_from(peer, payload.height)
 
 	@lazy_wrapper(GetBlockPayload)
@@ -451,7 +459,7 @@ class BlockchainCommunity(Community):
 		if payload.height < 0 or payload.height > self.blockchain.chain_height:
 			return
 
-		block = self.chain[payload.height]
+		block = self.blockchain.chain[payload.height]
 		self.ez_send(
 			peer,
 			BlockResponsePayload(
@@ -505,5 +513,7 @@ class BlockchainCommunity(Community):
 		if not success:
 			return
 
-		if self._add_transaction_hash(tx_digest):
+		tx: Tx = (payload.sender_key, payload.data, payload.timestamp, payload.signature)
+
+		if self._add_transaction_hash(tx):
 			self._gossip_transaction(payload, peer)

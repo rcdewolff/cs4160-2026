@@ -19,7 +19,7 @@ class TestBlockchain(unittest.TestCase):
         )
         self.genesis_block = Block(genesis_header, [])
         self.mempool = Mempool()
-        self.blockchain = Blockchain(self.genesis_block, self.mempool)
+        self.blockchain = Blockchain(self.genesis_block, self.mempool, difficulty=0)
 
     def test_add_valid_block(self):
         # Difficulty 0, any hash is valid.

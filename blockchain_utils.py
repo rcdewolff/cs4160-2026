@@ -67,8 +67,8 @@ def block_hash(
 
 def tx_hash(sender_key: bytes, data: bytes, timestamp: int, signature: bytes) -> bytes:
 	_ensure_uint64(timestamp, "timestamp")
-	timestamp_be = timestamp.to_bytes(8, "big", signed=False)
-	return hash_bytes(sender_key + data + timestamp_be + signature)
+	timestamp_be: bytes = timestamp.to_bytes(8, "big", signed=False)
+	return hash_bytes(b"".join([sender_key, data, timestamp_be, signature]))
 
 
 def txs_hash(tx_hashes: Iterable[bytes]) -> bytes:

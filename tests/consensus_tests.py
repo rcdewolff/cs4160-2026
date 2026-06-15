@@ -11,6 +11,7 @@ from blockchain_community import (
 	SubmitTransactionPayload,
 )
 from blockchain_utils import Block, BlockHeader, mine_nonce, tx_hash, txs_hash
+from mempool import Tx
 
 
 def make_block(parent_hash, tx_hashes, difficulty, timestamp):
@@ -22,7 +23,7 @@ def make_block(parent_hash, tx_hashes, difficulty, timestamp):
 
 
 def tx_height(node, txh):
-	for height, block in enumerate(node.chain):
+	for height, block in enumerate(node.blockchain.chain):
 		if txh in block.tx_hashes:
 			return height
 	return None
@@ -46,47 +47,47 @@ class ConsensusLogicTests(TestBase[BlockchainCommunity]):
 		await super().tearDown()
 
 	def test_genesis_consistency(self):
-		tips = {self.overlay(i).best_tip for i in range(2)}
+		tips = {self.overlay(i).blockchain.tip for i in range(2)}
 		self.assertEqual(len(tips), 1)
 		for i in range(2):
-			self.assertEqual(len(self.overlay(i).chain), 1)
-			self.assertEqual(self.overlay(i).height_by_hash[self.overlay(i).best_tip], 0)
+			self.assertEqual(len(self.overlay(i).blockchain.chain), 1)
+			self.assertEqual(self.overlay(i).blockchain.height_by_hash[self.overlay(i).blockchain.tip], 0)
 
 	def test_add_block_extends(self):
 		node = self.overlay(0)
-		genesis = node.best_tip
+		genesis = node.blockchain.tip
 		block = make_block(genesis, [], 1, 1000)
 		self.assertTrue(node.add_block(block))
-		self.assertEqual(len(node.chain), 2)
-		self.assertEqual(node.best_tip, block.header.hash())
-		self.assertEqual(node.height_by_hash[node.best_tip], 1)
+		self.assertEqual(len(node.blockchain.chain), 2)
+		self.assertEqual(node.blockchain.tip, block.header.hash())
+		self.assertEqual(node.blockchain.height_by_hash[node.blockchain.tip], 1)
 		# Re-adding the same block is a no-op.
 		self.assertFalse(node.add_block(block))
-		self.assertEqual(len(node.chain), 2)
+		self.assertEqual(len(node.blockchain.chain), 2)
 
 	def test_reorg_longer_chain_wins_out_of_order(self):
 		node = self.overlay(0)
-		g = node.best_tip
+		g = node.blockchain.tip
 		a1 = make_block(g, [], 1, 1000)
 		b1 = make_block(g, [], 1, 2000)
 		b2 = make_block(b1.header.hash(), [], 1, 2001)
 
 		node.add_block(a1)
-		self.assertEqual(node.best_tip, a1.header.hash())
+		self.assertEqual(node.blockchain.tip, a1.header.hash())
 
 		# b2 arrives before its parent b1 -> buffered as an orphan, tip unchanged.
 		node.add_block(b2)
-		self.assertEqual(node.best_tip, a1.header.hash())
+		self.assertEqual(node.blockchain.tip, a1.header.hash())
 		self.assertIn(b2.header.hash(), node.pending_blocks)
 
 		# b1 arrives -> connects b2 -> fork B is longer -> reorg.
 		node.add_block(b1)
-		self.assertEqual(node.best_tip, b2.header.hash())
-		self.assertEqual(len(node.chain), 3)
+		self.assertEqual(node.blockchain.tip, b2.header.hash())
+		self.assertEqual(len(node.blockchain.chain), 3)
 		self.assertEqual(node.pending_blocks, {})
 
 	def test_tie_break_is_deterministic(self):
-		g = self.overlay(0).best_tip
+		g = self.overlay(0).blockchain.tip
 		x = make_block(g, [], 1, 1000)
 		y = make_block(g, [], 1, 1001)
 		winner = min(x.header.hash(), y.header.hash())
@@ -98,65 +99,68 @@ class ConsensusLogicTests(TestBase[BlockchainCommunity]):
 		n1.add_block(y)
 		n1.add_block(x)
 
-		self.assertEqual(n0.best_tip, winner)
-		self.assertEqual(n1.best_tip, winner)
+		self.assertEqual(n0.blockchain.tip, winner)
+		self.assertEqual(n1.blockchain.tip, winner)
 
 	def test_reorg_returns_tx_to_mempool(self):
 		node = self.overlay(0)
-		g = node.best_tip
-		txh = hashlib.sha256(b"the-test-transaction").digest()
-		node.known_txs.add(txh)
-		node._tx_order.append(txh)
-		node.mempool = [txh]
-		node.mempool_set = {txh}
+		g = node.blockchain.tip
+		tx: Tx = (b"sender-key", b"data", 1, b"signature")
+		txid = tx_hash(tx[0], tx[1], tx[2], tx[3])
+		# txh = hashlib.sha256(b"the-test-transaction").digest()
+		# node.known_txs.add(txh)
+		# node._tx_order.append(txh)
+		# node.mempool = [txh]
+		# node.mempool_set = {txh}
+		node.mempool.add(tx)
 
 		# Fork A buries the tx at height 1.
-		a1 = make_block(g, [txh], 1, 1000)
+		a1 = make_block(g, [txid], 1, 1000)
 		node.add_block(a1)
-		self.assertEqual(node.best_tip, a1.header.hash())
-		self.assertNotIn(txh, node.mempool_set)
+		self.assertEqual(node.blockchain.tip, a1.header.hash())
+		self.assertNotIn(txid, node.mempool.free_txs)
 
 		# Longer fork B without the tx wins -> tx must come back to the mempool.
 		b1 = make_block(g, [], 1, 2000)
 		b2 = make_block(b1.header.hash(), [], 1, 2001)
 		node.add_block(b1)
 		node.add_block(b2)
-		self.assertEqual(node.best_tip, b2.header.hash())
-		self.assertIn(txh, node.mempool_set)
+		self.assertEqual(node.blockchain.tip, b2.header.hash())
+		self.assertIn(txid, node.mempool.free_txs)
 
 	def test_orphan_buffer_connects_in_order(self):
 		node = self.overlay(0)
-		g = node.best_tip
+		g = node.blockchain.tip
 		b1 = make_block(g, [], 1, 1000)
 		b2 = make_block(b1.header.hash(), [], 1, 1001)
 		b3 = make_block(b2.header.hash(), [], 1, 1002)
 
 		node.add_block(b3)
 		node.add_block(b2)
-		self.assertEqual(node.best_tip, g)
+		self.assertEqual(node.blockchain.tip, g)
 		self.assertEqual(len(node.pending_blocks), 2)
 
 		node.add_block(b1)
-		self.assertEqual(node.best_tip, b3.header.hash())
-		self.assertEqual(len(node.chain), 4)
+		self.assertEqual(node.blockchain.tip, b3.header.hash())
+		self.assertEqual(len(node.blockchain.chain), 4)
 		self.assertEqual(node.pending_blocks, {})
 
 	def test_difficulty_floor_rejects_weak_block(self):
 		node = self.overlay(0)
-		g = node.best_tip
+		g = node.blockchain.tip
 		weak = make_block(g, [], 0, 1000)  # difficulty 0 is below the shared floor of 1
 		self.assertFalse(node.add_block(weak))
-		self.assertEqual(node.best_tip, g)
+		self.assertEqual(node.blockchain.tip, g)
 
 	def test_body_commitment_mismatch_rejected(self):
 		node = self.overlay(0)
-		g = node.best_tip
+		g = node.blockchain.tip
 		txh = hashlib.sha256(b"x").digest()
 		good = make_block(g, [txh], 1, 1000)
 		# Keep the (valid PoW) header but swap the body so txs_hash no longer matches.
 		tampered = Block(header=good.header, tx_hashes=[hashlib.sha256(b"y").digest()])
 		self.assertFalse(node.add_block(tampered))
-		self.assertEqual(node.best_tip, g)
+		self.assertEqual(node.blockchain.tip, g)
 
 
 class ConsensusNetworkTests(TestBase[BlockchainCommunity]):
@@ -191,8 +195,8 @@ class ConsensusNetworkTests(TestBase[BlockchainCommunity]):
 		await self.deliver_messages(timeout=0.5)
 
 		expected = tx_hash(sender_key, data, ts, signature)
-		self.assertIn(expected, self.overlay(0).mempool_set)
-		self.assertIn(expected, self.overlay(0).known_txs)
+		self.assertIn(expected, self.overlay(0).mempool.free_txs)
+		self.assertTrue(expected, self.overlay(0).mempool.is_known_tx(expected))
 
 		response = self.overlay(1).last_tx_response
 		self.assertIsNotNone(response)
@@ -208,7 +212,7 @@ class ConsensusNetworkTests(TestBase[BlockchainCommunity]):
 		self.overlay(1).ez_send(self.peer(0), SubmitTransactionPayload(sender_key, data, ts, bad_signature))
 		await self.deliver_messages(timeout=0.5)
 
-		self.assertEqual(self.overlay(0).mempool_set, set())
+		self.assertEqual(self.overlay(0).mempool.free_txs, dict())
 		self.assertIsNotNone(self.overlay(1).last_tx_response)
 		self.assertFalse(self.overlay(1).last_tx_response.success)
 
@@ -216,14 +220,14 @@ class ConsensusNetworkTests(TestBase[BlockchainCommunity]):
 		await self.introduce_nodes()
 		n0, n1 = self.overlay(0), self.overlay(1)
 
-		prev, ts = n0.best_tip, 1000
+		prev, ts = n0.blockchain.tip, 1000
 		for _ in range(3):
 			block = make_block(prev, [], 1, ts)
 			ts += 1
 			n0.add_block(block)
 			prev = block.header.hash()
-		self.assertEqual(len(n0.chain), 4)
-		self.assertEqual(len(n1.chain), 1)
+		self.assertEqual(len(n0.blockchain.chain), 4)
+		self.assertEqual(len(n1.blockchain.chain), 1)
 
 		# First tick learns n0's height; second tick fetches the missing blocks.
 		await n1._sync_step()
@@ -231,10 +235,10 @@ class ConsensusNetworkTests(TestBase[BlockchainCommunity]):
 		await n1._sync_step()
 		await self.deliver_messages(timeout=0.5)
 
-		self.assertEqual(n1.best_tip, n0.best_tip)
-		self.assertEqual(len(n1.chain), 4)
+		self.assertEqual(n1.blockchain.tip, n0.blockchain.tip)
+		self.assertEqual(len(n1.blockchain.chain), 4)
 		for h in range(4):
-			self.assertEqual(n0.chain[h].header.hash(), n1.chain[h].header.hash())
+			self.assertEqual(n0.blockchain.chain[h].header.hash(), n1.blockchain.chain[h].header.hash())
 
 
 class ConsensusMiningConvergenceTests(TestBase[BlockchainCommunity]):
@@ -267,7 +271,7 @@ class ConsensusMiningConvergenceTests(TestBase[BlockchainCommunity]):
 		await super().tearDown()
 
 	def _heights(self):
-		return [self.overlay(i).height_by_hash[self.overlay(i).best_tip] for i in range(3)]
+		return [self.overlay(i).blockchain.height_by_hash[self.overlay(i).blockchain.tip] for i in range(3)]
 
 	async def _run_until(self, predicate, timeout):
 		loop = asyncio.get_event_loop()
@@ -289,11 +293,9 @@ class ConsensusMiningConvergenceTests(TestBase[BlockchainCommunity]):
 
 		# Inject a transaction at one node; it must be mined in and propagate to all three.
 		node0 = self.overlay(0)
-		txh = hashlib.sha256(b"server-test-transaction").digest()
-		node0.known_txs.add(txh)
-		node0._tx_order.append(txh)
-		node0.mempool.append(txh)
-		node0.mempool_set.add(txh)
+		tx = (b"some-sender", b"some-data", 100, b"some-signature")
+		txh = tx_hash(tx[0], tx[1], tx[2], tx[3])
+		node0.mempool.add(tx)
 
 		def buried_everywhere():
 			heights = [tx_height(self.overlay(i), txh) for i in range(3)]
@@ -302,23 +304,22 @@ class ConsensusMiningConvergenceTests(TestBase[BlockchainCommunity]):
 			if len(set(heights)) != 1:  # same height on every node
 				return False
 			return all(
-				self.overlay(i).height_by_hash[self.overlay(i).best_tip] - heights[i] >= 3
+				self.overlay(i).blockchain.height_by_hash[self.overlay(i).blockchain.tip] - heights[i] >= 3
 				for i in range(3)
 			)
 
 		buried = await self._run_until(buried_everywhere, timeout=20)
 		self.assertTrue(buried, "tx was not buried >=3 deep consistently on all nodes")
-
 		# Consistency: every node agrees on the block hash at each confirmed height.
 		min_h = min(self._heights())
 		confirmed = min_h - 2
 		self.assertGreaterEqual(confirmed, 1)
 		for h in range(confirmed + 1):
-			hashes = {self.overlay(i).chain[h].header.hash() for i in range(3)}
+			hashes = {self.overlay(i).blockchain.chain[h].header.hash() for i in range(3)}
 			self.assertEqual(len(hashes), 1, f"nodes disagree at height {h}")
 
 		# Body commitment of the tx's block matches the spec recomputation on every node.
 		tx_h = tx_height(self.overlay(0), txh)
 		for i in range(3):
-			block = self.overlay(i).chain[tx_h]
+			block = self.overlay(i).blockchain.chain[tx_h]
 			self.assertEqual(txs_hash(block.tx_hashes), block.header.txs_hash)
