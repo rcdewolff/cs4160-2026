@@ -90,7 +90,6 @@ class Blockchain:
             self.chain.append(block)
             self.store.extend(self.chain_height, block)
             self.mempool.remove_confirmed(block.tx_hashes)
-            self._maybe_prune()
             return True
 
         other_height = self.height_by_hash[block_hash]
@@ -159,7 +158,6 @@ class Blockchain:
         self.store.reorg_to(fork_height)
         for height in range(fork_height + 1, self.chain_height + 1):
             self.store.extend(height, self.chain[height])
-        self._maybe_prune()
 
     def _bootstrap(self) -> None:
         for height in range(1, self.store.headers.count):
@@ -172,13 +170,27 @@ class Blockchain:
             self.tip = block_hash
             self.chain_height = height
     
-    def _maybe_prune(self) -> None:
+    def make_prune_plan(self) -> tuple[int, set[bytes]] | None:
         floor = self.chain_height - self.prune_depth
         if floor <= 0:
-            return
+            return None
         keep = {block_hash for block_hash, height in self.height_by_hash.items() if height >= floor}
         keep.add(self.genesis_hash)
-        self.store.prune(keep=lambda k: k in keep)
+        return floor, keep
+
+    def apply_prune_plan(self, keep: set[bytes]) -> int:
+        return self.store.prune(keep=lambda k: k in keep)
+
+    def finalize_prune_plan(self, floor: int) -> None:
         for block_hash, height in list(self.height_by_hash.items()):
             if height < floor and block_hash != self.genesis_hash:
                 self.height_by_hash.pop(block_hash, None)
+
+    def prune_once(self) -> int:
+        plan = self.make_prune_plan()
+        if plan is None:
+            return 0
+        floor, keep = plan
+        dropped = self.apply_prune_plan(keep)
+        self.finalize_prune_plan(floor)
+        return dropped

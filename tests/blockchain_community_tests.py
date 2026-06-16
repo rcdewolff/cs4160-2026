@@ -1,6 +1,6 @@
 from ipv8.keyvault.crypto import default_eccrypto
 from ipv8.test.base import TestBase
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import blockchain_community
 from blockchain_community import (
@@ -132,6 +132,20 @@ class BlockchainCommunityTests(TestBase[BlockchainCommunity]):
 
 		node.blockchain.store.get_block_by_height.assert_called_once_with(0)
 		node.ez_send.assert_called_once()
+
+	async def test_prune_step_runs_compaction_in_background(self):
+		node = self.overlay(1)
+		keep = {node.blockchain.genesis_hash}
+		node.blockchain.make_prune_plan = MagicMock(return_value=(2, keep))
+		node.blockchain.apply_prune_plan = MagicMock(return_value=1)
+		node.blockchain.finalize_prune_plan = MagicMock()
+
+		with patch("blockchain_community.asyncio.to_thread", new=AsyncMock(return_value=1)) as to_thread:
+			await node._prune_step()
+
+		to_thread.assert_awaited_once_with(node.blockchain.apply_prune_plan, keep)
+		node.blockchain.finalize_prune_plan.assert_called_once_with(2)
+		self.assertFalse(node._prune_in_progress)
 
 	def test_equal_height_tie_break_uses_smaller_hash(self):
 		node = self.overlay(0)

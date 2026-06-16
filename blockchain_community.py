@@ -32,6 +32,7 @@ from config import (
 	SYNC_DOWN_WINDOW,
 	FETCH_BATCH,
 	PENDING_CAP,
+	PRUNE_INTERVAL,
 )
 
 # Blockchain community payloads.
@@ -152,6 +153,7 @@ class BlockchainCommunity(Community):
 		self.peer_heights: dict[str, tuple[int, bytes]] = {}
 		self._req_counter = 0
 		self.last_tx_response = None
+		self._prune_in_progress = False
 
 		self.mempool = Mempool()
 		self.blockchain = Blockchain(self._init_genesis(), self.mempool, DIFFICULTY, data_dir=self._data_dir)
@@ -170,6 +172,9 @@ class BlockchainCommunity(Community):
 		self.register_task("mine", self._mine_loop, ignore=(Exception,))
 		self.register_task(
 			"sync", self._sync_step, interval=SYNC_INTERVAL, delay=SYNC_DELAY, ignore=(Exception,)
+		)
+		self.register_task(
+			"prune", self._prune_step, interval=PRUNE_INTERVAL, delay=PRUNE_INTERVAL, ignore=(Exception,)
 		)
 
 	async def unload(self) -> None:
@@ -420,6 +425,21 @@ class BlockchainCommunity(Community):
 		end = min(their_h, our_h + FETCH_BATCH)
 		for height in range(start, end + 1):
 			self.ez_send(peer, GetBlockPayload(height))
+
+	async def _prune_step(self) -> None:
+		if self._prune_in_progress:
+			return
+		plan = self.blockchain.make_prune_plan()
+		if plan is None:
+			return
+
+		floor, keep = plan
+		self._prune_in_progress = True
+		try:
+			await asyncio.to_thread(self.blockchain.apply_prune_plan, keep)
+			self.blockchain.finalize_prune_plan(floor)
+		finally:
+			self._prune_in_progress = False
 
 	# --- Message handlers ------------------------------------------------------------------
 

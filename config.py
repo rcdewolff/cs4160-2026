@@ -17,3 +17,5 @@ FETCH_BATCH = 64
 # Upper bound on buffered out-of-order (orphan) blocks.
 PENDING_CAP = 1000
 PRUNE_DEPTH = 1024
+# How often local storage compaction/pruning runs in the background.
+PRUNE_INTERVAL = 10.0

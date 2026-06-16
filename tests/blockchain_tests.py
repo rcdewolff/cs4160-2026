@@ -222,6 +222,7 @@ class TestBlockchain(unittest.TestCase):
                 block = Block(BlockHeader(prev, txs_hash([]), timestamp, 0, 0), [])
                 blockchain.add_block(block)
                 prev = block.header.hash()
+            blockchain.prune_once()
 
             self.assertIsNotNone(blockchain.store.get_block(blockchain.genesis_hash))
             self.assertIn(blockchain.genesis_hash, blockchain.blocks)

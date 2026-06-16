@@ -160,6 +160,7 @@ class LogStore:
         self.lock = threading.Lock()
         os.makedirs(dir_path, exist_ok=True)
         self._load_manifest()
+        self._next_segment_id = max(self.segments) + 1
         self._rebuild_index()
         self._open_active()
 
@@ -237,6 +238,11 @@ class LogStore:
         self._af.seek(0, os.SEEK_END)
         self._aoff = self._af.tell()
 
+    def _allocate_segment_id_locked(self) -> int:
+        sid = self._next_segment_id
+        self._next_segment_id += 1
+        return sid
+
     # ---- writes -----------------------------------------------------------
 
     def put(self, key: bytes, value: bytes) -> None:
@@ -257,7 +263,7 @@ class LogStore:
 
     def _roll_locked(self) -> None:
         self._af.close()
-        new_id = max(self.segments) + 1
+        new_id = self._allocate_segment_id_locked()
         self.segments.append(new_id)
         self.active = new_id
         self._write_manifest()
@@ -272,17 +278,17 @@ class LogStore:
     def get(self, key: bytes) -> Optional[bytes]:
         with self.lock:
             loc = self.index.get(key)
-        if loc is None:
-            return None
-        sid, off = loc
-        with open(self._seg_path(sid), "rb") as f:
-            f.seek(off)
-            head = f.read(12)
-            crc, klen, vlen = _HEAD.unpack(head)
-            rest = f.read(klen + vlen)
-        if (zlib.crc32(head[4:] + rest) & 0xFFFFFFFF) != crc:
-            return None
-        return rest[klen : klen + vlen]
+            if loc is None:
+                return None
+            sid, off = loc
+            with open(self._seg_path(sid), "rb") as f:
+                f.seek(off)
+                head = f.read(12)
+                crc, klen, vlen = _HEAD.unpack(head)
+                rest = f.read(klen + vlen)
+            if (zlib.crc32(head[4:] + rest) & 0xFFFFFFFF) != crc:
+                return None
+            return rest[klen : klen + vlen]
 
     def __contains__(self, key: bytes) -> bool:
         with self.lock:
@@ -298,11 +304,12 @@ class LogStore:
         Safe to run on a background thread/task: it never writes the active
         segment, so appends proceed concurrently. `on_chunk` is called every
         `chunk` records so a cooperative scheduler can yield."""
-        sealed = [s for s in self.segments if s != self.active]
+        with self.lock:
+            sealed = [s for s in self.segments if s != self.active]
+            new_id = self._allocate_segment_id_locked()
         if not sealed:
             return 0
 
-        new_id = max(self.segments) + 1
         new_path = self._seg_path(new_id)
         moved: dict[bytes, tuple[int, int]] = {}
         dropped = 0
@@ -326,7 +333,8 @@ class LogStore:
 
         # Commit: flip CURRENT atomically, then repoint the in-memory index.
         with self.lock:
-            self.segments = [new_id, self.active]
+            survivors = [sid for sid in self.segments if sid not in sealed]
+            self.segments = [new_id] + survivors
             self._write_manifest()  # <-- the single durable, atomic switch
             for key in list(self.index.keys()):
                 if self.index[key][0] in sealed:
