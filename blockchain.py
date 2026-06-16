@@ -45,7 +45,7 @@ class Blockchain:
         self.chain = [genesis]
         self.tip: bytes = self.genesis_hash
         self.chain_height: int = 0
-        self.last_compaction_height: int = 0
+        self._last_compaction_height: int = 0
 
         self.store = BlockStore(data_dir)
         self.blocks = _BlocksView(self.store)
