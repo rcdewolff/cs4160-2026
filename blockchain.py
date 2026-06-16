@@ -142,20 +142,6 @@ class Blockchain:
             self.reorganize(block_hash)
         return True
 
-    # def get_chain(self, tip: bytes) -> list[Block]:
-    #     chain: list[Block] = []
-    #     cur = tip
-    #     while True:
-    #         block = self.blocks.get(cur)
-    #         if block is None:
-    #             return []
-    #         chain.append(block)
-    #         if cur == self.genesis_hash:
-    #             break
-    #         cur = block.header.prev_hash
-    #     chain.reverse()
-    #     return chain
-
     def find_fork_point(self, hash_a: bytes, hash_b: bytes) -> bytes | None:
         seen: set[bytes] = set()
         cur = hash_a
