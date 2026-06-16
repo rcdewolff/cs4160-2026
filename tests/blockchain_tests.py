@@ -193,6 +193,7 @@ class TestBlockchain(unittest.TestCase):
             self.assertEqual(restored.tip, block2.header.hash())
             self.assertEqual(len(restored.chain), 3)
             self.assertEqual(restored.chain[2].header.hash(), block2.header.hash())
+            self.assertEqual(restored.block_at_height(1).header.hash(), block1.header.hash())
             restored.store.close()
 
     def test_reorg_persists_tip_header(self):
@@ -218,15 +219,31 @@ class TestBlockchain(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir:
             blockchain = Blockchain(self.genesis_block, Mempool(), difficulty=0, data_dir=data_dir, prune_depth=1)
             prev = blockchain.tip
+            block_hashes = []
             for timestamp in range(1, 4):
                 block = Block(BlockHeader(prev, txs_hash([]), timestamp, 0, 0), [])
                 blockchain.add_block(block)
                 prev = block.header.hash()
+                block_hashes.append(prev)
             blockchain.prune_once()
+            checkpoint_hash = blockchain.store.headers.get(2)[0]
 
+            self.assertEqual(blockchain.checkpoint_height, 2)
+            self.assertEqual(blockchain.checkpoint_hash, checkpoint_hash)
             self.assertIsNotNone(blockchain.store.get_block(blockchain.genesis_hash))
+            self.assertIsNone(blockchain.store.get_block(block_hashes[0]))
             self.assertIn(blockchain.genesis_hash, blockchain.blocks)
+            self.assertEqual(len(blockchain.chain), 4)
+            self.assertEqual(blockchain.chain[0].header.hash(), blockchain.genesis_hash)
             blockchain.store.close()
+
+            restored = Blockchain(self.genesis_block, Mempool(), difficulty=0, data_dir=data_dir, prune_depth=1)
+            self.assertEqual(restored.checkpoint_height, 2)
+            self.assertEqual(restored.checkpoint_hash, checkpoint_hash)
+            self.assertNotIn(block_hashes[0], restored.height_by_hash)
+            self.assertIn(block_hashes[1], restored.height_by_hash)
+            self.assertEqual(restored.block_at_height(1).header.hash(), block_hashes[0])
+            restored.store.close()
 
 
 if __name__ == "__main__":

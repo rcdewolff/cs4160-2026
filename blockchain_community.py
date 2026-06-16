@@ -433,11 +433,10 @@ class BlockchainCommunity(Community):
 		if plan is None:
 			return
 
-		floor, keep = plan
 		self._prune_in_progress = True
 		try:
-			await asyncio.to_thread(self.blockchain.apply_prune_plan, keep)
-			self.blockchain.finalize_prune_plan(floor)
+			await asyncio.to_thread(self.blockchain.apply_prune_plan, plan)
+			self.blockchain.finalize_prune_plan(plan)
 		finally:
 			self._prune_in_progress = False
 

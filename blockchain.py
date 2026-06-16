@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from blockchain_utils import Block, has_valid_pow
 from mempool import Mempool
 from config import DIFFICULTY, PRUNE_DEPTH
@@ -26,6 +28,38 @@ class _BlocksView:
     def __setitem__(self, h: bytes, block: Block) -> None:
         self._s.put_block(block)
 
+
+class _ChainView:
+    # Height-indexed canonical chain view backed by HeaderLog/BlockStore.
+    def __init__(self, chain: Blockchain) -> None:
+        self._chain = chain
+
+    def __len__(self) -> int:
+        return self._chain.chain_height + 1
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            start, stop, step = index.indices(len(self))
+            return [self[i] for i in range(start, stop, step)]
+        if index < 0:
+            index += len(self)
+        block = self._chain.block_at_height(index)
+        if block is None:
+            raise IndexError(index)
+        return block
+
+    def __iter__(self):
+        for height in range(len(self)):
+            yield self[height]
+
+
+@dataclass(frozen=True)
+class PrunePlan:
+    floor: int
+    checkpoint_hash: bytes
+    keep: set[bytes]
+
+
 class Blockchain:
     def __init__(self, 
                  genesis: Block, 
@@ -40,13 +74,14 @@ class Blockchain:
         self.mempool = mempool
 
         self.height_by_hash: dict[bytes, int] = {self.genesis_hash: 0}
-        # self.blocks: dict[bytes, Block] = {self.genesis_hash: genesis}
-        self.chain = [genesis]
         self.tip: bytes = self.genesis_hash
         self.chain_height: int = 0
 
         self.store = BlockStore(data_dir)
         self.blocks = _BlocksView(self.store)
+        self.chain = _ChainView(self)
+        self.checkpoint_height = 0
+        self.checkpoint_hash = self.genesis_hash
 
         if self.store.headers.count == 0:
             self.store.put_block(genesis)
@@ -57,7 +92,18 @@ class Blockchain:
                 raise ValueError("stored genesis does not match configured genesis")
             if self.store.get_block(self.genesis_hash) is None:
                 self.store.put_block(genesis)
+        self._load_checkpoint()
         self._bootstrap()
+
+    def _load_checkpoint(self) -> None:
+        checkpoint = self.store.load_checkpoint()
+        if checkpoint is None:
+            return
+        stored = self.store.headers.get(checkpoint.height)
+        if stored is None or stored[0] != checkpoint.block_hash:
+            return
+        self.checkpoint_height = checkpoint.height
+        self.checkpoint_hash = checkpoint.block_hash
 
     def validate_block(self, block: Block) -> bool:
         header_hash = block.header.hash()
@@ -87,7 +133,6 @@ class Blockchain:
         if parent == self.tip:
             self.tip = block_hash
             self.chain_height += 1
-            self.chain.append(block)
             self.store.extend(self.chain_height, block)
             self.mempool.remove_confirmed(block.tx_hashes)
             return True
@@ -132,8 +177,10 @@ class Blockchain:
     def reorganize(self, new_tip: bytes) -> None:
         fork_point = self.find_fork_point(self.tip, new_tip)
         if fork_point is None:
-            fork_point = self.genesis_hash
-        fork_height = self.height_by_hash[fork_point]
+            return
+        fork_height = self.height_by_hash.get(fork_point)
+        if fork_height is None or fork_height < self.checkpoint_height:
+            return
         
         cur = self.tip
         while cur != fork_point:
@@ -152,12 +199,11 @@ class Blockchain:
         suffix.reverse()
 
         self.tip = new_tip
-        self.chain = self.chain[: fork_height + 1] + suffix
         self.chain_height = fork_height + len(suffix)
         
         self.store.reorg_to(fork_height)
-        for height in range(fork_height + 1, self.chain_height + 1):
-            self.store.extend(height, self.chain[height])
+        for offset, block in enumerate(suffix, start=1):
+            self.store.extend(fork_height + offset, block)
 
     def _bootstrap(self) -> None:
         for height in range(1, self.store.headers.count):
@@ -165,32 +211,50 @@ class Blockchain:
             block = self.store.get_block(block_hash)
             if block is None:
                 block = Block(header=unpack_header(header), tx_hashes=[])
-            self.height_by_hash[block_hash] = height
-            self.chain.append(block)
+            if height >= self.checkpoint_height:
+                self.height_by_hash[block_hash] = height
             self.tip = block_hash
             self.chain_height = height
     
-    def make_prune_plan(self) -> tuple[int, set[bytes]] | None:
-        floor = self.chain_height - self.prune_depth
-        if floor <= 0:
+    def block_at_height(self, height: int) -> Block | None:
+        if height < 0 or height > self.chain_height:
             return None
+        block = self.store.get_block_by_height(height)
+        if block is not None:
+            return block
+        stored = self.store.headers.get(height)
+        if stored is None:
+            return None
+        return Block(header=unpack_header(stored[1]), tx_hashes=[])
+
+    def make_prune_plan(self) -> PrunePlan | None:
+        floor = self.chain_height - self.prune_depth
+        if floor <= self.checkpoint_height:
+            return None
+        checkpoint = self.store.headers.get(floor)
+        if checkpoint is None:
+            return None
+        checkpoint_hash = checkpoint[0]
         keep = {block_hash for block_hash, height in self.height_by_hash.items() if height >= floor}
         keep.add(self.genesis_hash)
-        return floor, keep
+        keep.add(checkpoint_hash)
+        return PrunePlan(floor=floor, checkpoint_hash=checkpoint_hash, keep=keep)
 
-    def apply_prune_plan(self, keep: set[bytes]) -> int:
-        return self.store.prune(keep=lambda k: k in keep)
+    def apply_prune_plan(self, plan: PrunePlan) -> int:
+        self.store.write_checkpoint(plan.floor, plan.checkpoint_hash)
+        return self.store.prune(keep=lambda k: k in plan.keep)
 
-    def finalize_prune_plan(self, floor: int) -> None:
+    def finalize_prune_plan(self, plan: PrunePlan) -> None:
+        self.checkpoint_height = plan.floor
+        self.checkpoint_hash = plan.checkpoint_hash
         for block_hash, height in list(self.height_by_hash.items()):
-            if height < floor and block_hash != self.genesis_hash:
+            if height < plan.floor and block_hash != self.genesis_hash:
                 self.height_by_hash.pop(block_hash, None)
 
     def prune_once(self) -> int:
         plan = self.make_prune_plan()
         if plan is None:
             return 0
-        floor, keep = plan
-        dropped = self.apply_prune_plan(keep)
-        self.finalize_prune_plan(floor)
+        dropped = self.apply_prune_plan(plan)
+        self.finalize_prune_plan(plan)
         return dropped

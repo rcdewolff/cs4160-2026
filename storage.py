@@ -5,7 +5,9 @@ import os
 import struct
 import tempfile
 import threading
+import time
 import zlib
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 from blockchain_utils import (
@@ -49,6 +51,15 @@ def _open_rw(path: str):
 def unpack_header(b: bytes) -> BlockHeader:
     prev, txs, ts, diff, nonce = struct.unpack(">32s32sQIQ", b)
     return BlockHeader(prev, txs, ts, diff, nonce)
+
+
+@dataclass(frozen=True)
+class Checkpoint:
+    height: int
+    block_hash: bytes
+    timestamp: int
+    signatures: tuple[str, ...] = ()
+    reason: str = "depth-finalized"
 
 
 # ---------------------------------------------------------------------------
@@ -369,9 +380,57 @@ class LogStore:
 
 class BlockStore:
     def __init__(self, base_dir: str) -> None:
+        self.base_dir = base_dir
         os.makedirs(base_dir, exist_ok=True)
         self.headers = HeaderLog(os.path.join(base_dir, "headers.log"))
         self.bodies = LogStore(os.path.join(base_dir, "bodies"))
+
+    def _checkpoint_path(self) -> str:
+        return os.path.join(self.base_dir, "checkpoint.json")
+
+    def load_checkpoint(self) -> Optional[Checkpoint]:
+        path = self._checkpoint_path()
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return Checkpoint(
+            height=int(data["height"]),
+            block_hash=bytes.fromhex(data["block_hash"]),
+            timestamp=int(data["timestamp"]),
+            signatures=tuple(data.get("signatures", [])),
+            reason=data.get("reason", "depth-finalized"),
+        )
+
+    def write_checkpoint(
+        self,
+        height: int,
+        block_hash: bytes,
+        signatures: tuple[str, ...] = (),
+        reason: str = "depth-finalized",
+    ) -> Checkpoint:
+        checkpoint = Checkpoint(
+            height=height,
+            block_hash=block_hash,
+            timestamp=int(time.time()),
+            signatures=signatures,
+            reason=reason,
+        )
+        data = {
+            "height": checkpoint.height,
+            "block_hash": checkpoint.block_hash.hex(),
+            "timestamp": checkpoint.timestamp,
+            "signatures": list(checkpoint.signatures),
+            "reason": checkpoint.reason,
+        }
+        fd, tmp = tempfile.mkstemp(dir=self.base_dir)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self._checkpoint_path())
+        _fsync_dir(self.base_dir)
+        return checkpoint
 
     # body store (keyed by block hash) -------------------------------------
     def put_block(self, block: Block) -> None:
