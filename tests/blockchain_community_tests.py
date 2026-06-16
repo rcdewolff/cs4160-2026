@@ -8,6 +8,8 @@ from blockchain_community import (
 	BlockChainCommunitySettings,
 	BlockchainCommunity,
 	BlockResponsePayload,
+	CheckpointAckPayload,
+	CheckpointProposalPayload,
 	GetBlockPayload,
 	SubmitTransactionPayload,
 	TransactionGossipPayload,
@@ -43,7 +45,10 @@ class BlockchainCommunityTests(TestBase[BlockchainCommunity]):
 
 	def test_assignment_message_ids_and_genesis(self):
 		self.assertEqual([payload.msg_id for payload in ASSIGNMENT_MESSAGE_PAYLOADS], [1, 2, 3, 4, 5, 6])
-		self.assertEqual([payload.msg_id for payload in [TransactionGossipPayload]], [7])
+		self.assertEqual(
+			[payload.msg_id for payload in [TransactionGossipPayload, CheckpointProposalPayload, CheckpointAckPayload]],
+			[7, 8, 9],
+		)
 		node = self.overlay(0)
 		self.assertEqual(len(node.blockchain.chain), 1)
 		self.assertEqual(node.blockchain.height_by_hash[node.blockchain.tip], 0)
@@ -133,20 +138,57 @@ class BlockchainCommunityTests(TestBase[BlockchainCommunity]):
 		node.blockchain.store.get_block_by_height.assert_called_once_with(0)
 		node.ez_send.assert_called_once()
 
-	async def test_prune_step_runs_compaction_in_background(self):
+	async def test_prune_step_proposes_checkpoint_and_waits_for_quorum(self):
 		node = self.overlay(1)
-		keep = {node.blockchain.genesis_hash}
 		plan = MagicMock()
-		plan.keep = keep
 		plan.floor = 2
+		plan.checkpoint_hash = b"\x11" * HASH_SIZE
 		node.blockchain.make_prune_plan = MagicMock(return_value=plan)
+		node._checkpoint_payload_is_valid = MagicMock(return_value=True)
+		node._make_checkpoint_ack = MagicMock(return_value=None)
+		node._broadcast_checkpoint_proposal = MagicMock()
+
+		await node._prune_step()
+
+		node._broadcast_checkpoint_proposal.assert_called_once()
+		self.assertFalse(node._prune_in_progress)
+
+	async def test_checkpoint_quorum_runs_compaction_in_background(self):
+		node = self.overlay(1)
+		node.blockchain.prune_depth = 1
+		prev = node.blockchain.tip
+		for timestamp in range(1, 4):
+			block = make_block(prev, [], 0, timestamp)
+			node.add_block(block)
+			prev = block.header.hash()
+
+		plan = node.blockchain.make_prune_plan()
+		self.assertIsNotNone(plan)
 		node.blockchain.apply_prune_plan = MagicMock(return_value=1)
 		node.blockchain.finalize_prune_plan = MagicMock()
 
-		with patch("blockchain_community.asyncio.to_thread", new=AsyncMock(return_value=1)) as to_thread:
-			await node._prune_step()
+		key = (2, plan.checkpoint_hash, 0, node.blockchain.genesis_hash)
+		self_ack = node._make_checkpoint_ack(*key)
+		self.assertIsNotNone(self_ack)
+		message = node._checkpoint_vote_message(*key)
+		peer_ack = CheckpointAckPayload(
+			key[0],
+			key[1],
+			key[2],
+			key[3],
+			self.key_bin(0),
+			default_eccrypto.create_signature(self.private_key(0), message),
+		)
+		bad_ack = CheckpointAckPayload(key[0], key[1], key[2], key[3], self.key_bin(2), b"bad")
 
-		to_thread.assert_awaited_once_with(node.blockchain.apply_prune_plan, plan)
+		with patch("blockchain_community.asyncio.to_thread", new=AsyncMock(return_value=1)) as to_thread:
+			self.assertFalse(node._record_checkpoint_ack(bad_ack))
+			self.assertTrue(node._record_checkpoint_ack(self_ack))
+			self.assertTrue(node._record_checkpoint_ack(peer_ack))
+			await node._checkpoint_apply_tasks[key]
+
+		expected_signatures = tuple(f"{signer}:{signature}" for signer, signature in sorted(node._checkpoint_acks[key].items()))
+		to_thread.assert_awaited_once_with(node.blockchain.apply_prune_plan, plan, expected_signatures)
 		node.blockchain.finalize_prune_plan.assert_called_once_with(plan)
 		self.assertFalse(node._prune_in_progress)
 

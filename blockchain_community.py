@@ -110,6 +110,25 @@ class TransactionGossipPayload(VariablePayload):
 	format_list = SubmitTransactionPayload.format_list
 	names = SubmitTransactionPayload.names
 
+
+@vp_compile
+class CheckpointProposalPayload(VariablePayload):
+	msg_id = 8
+
+	format_list = ["q", "varlenH", "q", "varlenH"]
+	names = ["height", "block_hash", "previous_height", "previous_hash"]
+
+
+@vp_compile
+class CheckpointAckPayload(VariablePayload):
+	msg_id = 9
+
+	format_list = ["q", "varlenH", "q", "varlenH", "varlenH", "varlenH"]
+	names = ["height", "block_hash", "previous_height", "previous_hash", "signer_key", "signature"]
+
+
+CHECKPOINT_DOMAIN = b"Lab3CheckpointV1"
+
 class BlockChainCommunitySettings(CommunitySettings):
 	allowed_key_hexes: set[str]
 	data_dir: str
@@ -154,6 +173,12 @@ class BlockchainCommunity(Community):
 		self._req_counter = 0
 		self.last_tx_response = None
 		self._prune_in_progress = False
+		self._checkpoint_acks: dict[tuple[int, bytes, int, bytes], dict[str, str]] = {}
+		self._checkpoint_votes_cast: dict[tuple[int, int], bytes] = {}
+		self._checkpoint_vote_signatures: dict[tuple[int, bytes, int, bytes], bytes] = {}
+		self._checkpoint_proposals_sent: set[tuple[int, bytes, int, bytes]] = set()
+		self._checkpoint_apply_started: set[tuple[int, bytes, int, bytes]] = set()
+		self._checkpoint_apply_tasks: dict[tuple[int, bytes, int, bytes], asyncio.Task] = {}
 
 		self.mempool = Mempool()
 		self.blockchain = Blockchain(self._init_genesis(), self.mempool, DIFFICULTY, data_dir=self._data_dir)
@@ -166,6 +191,8 @@ class BlockchainCommunity(Community):
 		self.add_message_handler(GetBlockPayload, self.on_get_block)
 		self.add_message_handler(BlockResponsePayload, self.on_block_response)
 		self.add_message_handler(TransactionGossipPayload, self.on_transaction_gossip)
+		self.add_message_handler(CheckpointProposalPayload, self.on_checkpoint_proposal)
+		self.add_message_handler(CheckpointAckPayload, self.on_checkpoint_ack)
 
 	def started(self) -> None:
 		# Called once by IPv8 after the overlay loads (run_node passes the ("started",) hook).
@@ -192,6 +219,21 @@ class BlockchainCommunity(Community):
 			if key_hex in self.allowed_key_hexes and key_hex != self.server_key_hex:
 				result.append(peer)
 		return result
+
+	def _checkpoint_member_key_hexes(self) -> set[str]:
+		members = {key.lower() for key in self.allowed_key_hexes}
+		if self.server_key_hex:
+			members.discard(self.server_key_hex.lower())
+		members.add(self.my_peer.public_key.key_to_bin().hex())
+		return members
+
+	def _checkpoint_quorum_size(self) -> int:
+		member_count = len(self._checkpoint_member_key_hexes())
+		return max(1, (2 * member_count + 2) // 3)
+
+	def _is_checkpoint_peer(self, peer: Peer) -> bool:
+		key_hex = peer.public_key.key_to_bin().hex()
+		return key_hex in self._checkpoint_member_key_hexes()
 
 	def _gossip_transaction(self, payload, exclude_peer: Peer) -> None:
 		exclude_key = exclude_peer.public_key.key_to_bin().hex()
@@ -353,6 +395,191 @@ class BlockchainCommunity(Community):
 		txid, is_new = self.mempool.add(tx)
 		return is_new
 
+	# --- Quorum checkpoints ---------------------------------------------------------------
+
+	def _checkpoint_key(
+		self,
+		height: int,
+		block_hash: bytes,
+		previous_height: int,
+		previous_hash: bytes,
+	) -> tuple[int, bytes, int, bytes]:
+		return (height, block_hash, previous_height, previous_hash)
+
+	def _checkpoint_vote_message(
+		self,
+		height: int,
+		block_hash: bytes,
+		previous_height: int,
+		previous_hash: bytes,
+	) -> bytes:
+		return b"".join(
+			[
+				CHECKPOINT_DOMAIN,
+				self.community_id,
+				height.to_bytes(8, "big", signed=False),
+				block_hash,
+				previous_height.to_bytes(8, "big", signed=False),
+				previous_hash,
+			]
+		)
+
+	def _checkpoint_payload_is_valid(
+		self,
+		height: int,
+		block_hash: bytes,
+		previous_height: int,
+		previous_hash: bytes,
+	) -> bool:
+		if height < 0 or previous_height < 0:
+			return False
+		if len(block_hash) != HASH_SIZE or len(previous_hash) != HASH_SIZE:
+			return False
+		return self.blockchain.can_finalize_checkpoint(height, block_hash, previous_height, previous_hash)
+
+	def _make_checkpoint_ack(
+		self,
+		height: int,
+		block_hash: bytes,
+		previous_height: int,
+		previous_hash: bytes,
+	) -> CheckpointAckPayload | None:
+		if not self._checkpoint_payload_is_valid(height, block_hash, previous_height, previous_hash):
+			return None
+
+		vote_round = (previous_height, height)
+		previous_vote = self._checkpoint_votes_cast.get(vote_round)
+		if previous_vote is not None and previous_vote != block_hash:
+			return None
+		self._checkpoint_votes_cast[vote_round] = block_hash
+
+		key = self._checkpoint_key(height, block_hash, previous_height, previous_hash)
+		signature = self._checkpoint_vote_signatures.get(key)
+		if signature is None:
+			message = self._checkpoint_vote_message(height, block_hash, previous_height, previous_hash)
+			signature = self.crypto.create_signature(self.my_peer.key, message)
+			self._checkpoint_vote_signatures[key] = signature
+
+		return CheckpointAckPayload(
+			height,
+			block_hash,
+			previous_height,
+			previous_hash,
+			self.my_peer.public_key.key_to_bin(),
+			signature,
+		)
+
+	def _broadcast_checkpoint_proposal(self, payload: CheckpointProposalPayload) -> None:
+		for peer in self._teammate_peers():
+			self.ez_send(peer, payload)
+
+	def _broadcast_checkpoint_ack(self, payload: CheckpointAckPayload) -> None:
+		for peer in self._teammate_peers():
+			self.ez_send(peer, payload)
+
+	def _propose_checkpoint(self, plan) -> None:
+		height = plan.floor
+		block_hash = plan.checkpoint_hash
+		previous_height = self.blockchain.checkpoint_height
+		previous_hash = self.blockchain.checkpoint_hash
+		if not self._checkpoint_payload_is_valid(height, block_hash, previous_height, previous_hash):
+			return
+
+		key = self._checkpoint_key(height, block_hash, previous_height, previous_hash)
+		if key in self._checkpoint_proposals_sent:
+			return
+		self._checkpoint_proposals_sent.add(key)
+
+		proposal = CheckpointProposalPayload(height, block_hash, previous_height, previous_hash)
+		ack = self._make_checkpoint_ack(height, block_hash, previous_height, previous_hash)
+		self._broadcast_checkpoint_proposal(proposal)
+		if ack is not None:
+			self._record_checkpoint_ack(ack)
+			self._broadcast_checkpoint_ack(ack)
+
+	def _record_checkpoint_ack(self, payload: CheckpointAckPayload) -> bool:
+		if len(payload.signer_key) == 0 or len(payload.signature) == 0:
+			return False
+		if not self._checkpoint_payload_is_valid(
+			payload.height,
+			payload.block_hash,
+			payload.previous_height,
+			payload.previous_hash,
+		):
+			return False
+
+		signer_hex = payload.signer_key.hex()
+		if signer_hex not in self._checkpoint_member_key_hexes():
+			return False
+
+		try:
+			signer_key = self.crypto.key_from_public_bin(payload.signer_key)
+		except Exception:
+			return False
+		message = self._checkpoint_vote_message(
+			payload.height,
+			payload.block_hash,
+			payload.previous_height,
+			payload.previous_hash,
+		)
+		if not self.crypto.is_valid_signature(signer_key, message, payload.signature):
+			return False
+
+		key = self._checkpoint_key(
+			payload.height,
+			payload.block_hash,
+			payload.previous_height,
+			payload.previous_hash,
+		)
+		votes = self._checkpoint_acks.setdefault(key, {})
+		votes.setdefault(signer_hex, payload.signature.hex())
+
+		if len(votes) >= self._checkpoint_quorum_size():
+			self._start_checkpoint_apply(key)
+		return True
+
+	def _start_checkpoint_apply(self, key: tuple[int, bytes, int, bytes]) -> None:
+		if key in self._checkpoint_apply_started or self._prune_in_progress:
+			return
+		height, block_hash, _previous_height, _previous_hash = key
+		plan = self.blockchain.make_prune_plan_for(height, block_hash)
+		if plan is None:
+			return
+
+		votes = self._checkpoint_acks.get(key, {})
+		signatures = tuple(f"{signer}:{signature}" for signer, signature in sorted(votes.items()))
+		self._checkpoint_apply_started.add(key)
+		self._prune_in_progress = True
+		task = asyncio.create_task(self._apply_checkpoint_plan(key, plan, signatures))
+		self._checkpoint_apply_tasks[key] = task
+
+		def done_callback(done_task):
+			self._checkpoint_apply_tasks.pop(key, None)
+			try:
+				done_task.result()
+			except Exception:
+				self._checkpoint_apply_started.discard(key)
+				self._logger.exception("checkpoint prune failed")
+
+		task.add_done_callback(done_callback)
+
+	async def _apply_checkpoint_plan(
+		self,
+		key: tuple[int, bytes, int, bytes],
+		plan,
+		signatures: tuple[str, ...],
+	) -> None:
+		try:
+			await asyncio.to_thread(self.blockchain.apply_prune_plan, plan, signatures)
+			self.blockchain.finalize_prune_plan(plan)
+			self._checkpoint_acks = {
+				checkpoint_key: votes
+				for checkpoint_key, votes in self._checkpoint_acks.items()
+				if checkpoint_key[0] > self.blockchain.checkpoint_height
+			}
+		finally:
+			self._prune_in_progress = False
+
 	# --- Mining ----------------------------------------------------------------------------
 
 	async def _mine_loop(self) -> None:
@@ -433,12 +660,7 @@ class BlockchainCommunity(Community):
 		if plan is None:
 			return
 
-		self._prune_in_progress = True
-		try:
-			await asyncio.to_thread(self.blockchain.apply_prune_plan, plan)
-			self.blockchain.finalize_prune_plan(plan)
-		finally:
-			self._prune_in_progress = False
+		self._propose_checkpoint(plan)
 
 	# --- Message handlers ------------------------------------------------------------------
 
@@ -551,3 +773,27 @@ class BlockchainCommunity(Community):
 
 		if self._add_transaction_hash(tx):
 			self._gossip_transaction(payload, peer)
+
+	@lazy_wrapper(CheckpointProposalPayload)
+	def on_checkpoint_proposal(self, peer: Peer, payload: CheckpointProposalPayload):
+		if not self._is_checkpoint_peer(peer):
+			return
+
+		ack = self._make_checkpoint_ack(
+			payload.height,
+			payload.block_hash,
+			payload.previous_height,
+			payload.previous_hash,
+		)
+		if ack is None:
+			return
+		self._record_checkpoint_ack(ack)
+		self._broadcast_checkpoint_ack(ack)
+
+	@lazy_wrapper(CheckpointAckPayload)
+	def on_checkpoint_ack(self, peer: Peer, payload: CheckpointAckPayload):
+		if not self._is_checkpoint_peer(peer):
+			return
+		if payload.signer_key != peer.public_key.key_to_bin():
+			return
+		self._record_checkpoint_ack(payload)

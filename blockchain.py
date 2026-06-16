@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from blockchain_utils import Block, has_valid_pow
+from blockchain_utils import Block, HASH_SIZE, has_valid_pow
 from mempool import Mempool
 from config import DIFFICULTY, PRUNE_DEPTH
 from storage import BlockStore, unpack_header
@@ -227,21 +227,74 @@ class Blockchain:
             return None
         return Block(header=unpack_header(stored[1]), tx_hashes=[])
 
-    def make_prune_plan(self) -> PrunePlan | None:
-        floor = self.chain_height - self.prune_depth
-        if floor <= self.checkpoint_height:
+    def can_finalize_checkpoint(
+        self,
+        height: int,
+        block_hash: bytes,
+        previous_height: int,
+        previous_hash: bytes,
+    ) -> bool:
+        if height <= self.checkpoint_height:
+            return False
+        if previous_height != self.checkpoint_height or previous_hash != self.checkpoint_hash:
+            return False
+        if height > self.chain_height - self.prune_depth:
+            return False
+        if len(block_hash) != HASH_SIZE or len(previous_hash) != HASH_SIZE:
+            return False
+
+        previous_record = self.store.headers.get(previous_height)
+        if previous_record is None or previous_record[0] != previous_hash:
+            return False
+
+        parent = previous_hash
+        for check_height in range(previous_height + 1, height + 1):
+            stored = self.store.headers.get(check_height)
+            if stored is None:
+                return False
+            stored_hash, header_bytes = stored
+            try:
+                header = unpack_header(header_bytes)
+                computed_hash = header.hash()
+            except ValueError:
+                return False
+            if stored_hash != computed_hash:
+                return False
+            if header.prev_hash != parent:
+                return False
+            if header.difficulty < self.difficulty:
+                return False
+            if not has_valid_pow(stored_hash, self.difficulty):
+                return False
+            if not has_valid_pow(stored_hash, header.difficulty):
+                return False
+            parent = stored_hash
+
+        return parent == block_hash
+
+    def make_prune_plan_for(self, floor: int, checkpoint_hash: bytes) -> PrunePlan | None:
+        if not self.can_finalize_checkpoint(
+            floor,
+            checkpoint_hash,
+            self.checkpoint_height,
+            self.checkpoint_hash,
+        ):
             return None
-        checkpoint = self.store.headers.get(floor)
-        if checkpoint is None:
-            return None
-        checkpoint_hash = checkpoint[0]
         keep = {block_hash for block_hash, height in self.height_by_hash.items() if height >= floor}
         keep.add(self.genesis_hash)
         keep.add(checkpoint_hash)
         return PrunePlan(floor=floor, checkpoint_hash=checkpoint_hash, keep=keep)
 
-    def apply_prune_plan(self, plan: PrunePlan) -> int:
-        self.store.write_checkpoint(plan.floor, plan.checkpoint_hash)
+    def make_prune_plan(self) -> PrunePlan | None:
+        floor = self.chain_height - self.prune_depth
+        checkpoint = self.store.headers.get(floor)
+        if checkpoint is None:
+            return None
+        return self.make_prune_plan_for(floor, checkpoint[0])
+
+    def apply_prune_plan(self, plan: PrunePlan, signatures: tuple[str, ...] = ()) -> int:
+        reason = "quorum-finalized" if signatures else "depth-finalized"
+        self.store.write_checkpoint(plan.floor, plan.checkpoint_hash, signatures=signatures, reason=reason)
         return self.store.prune(keep=lambda k: k in plan.keep)
 
     def finalize_prune_plan(self, plan: PrunePlan) -> None:
