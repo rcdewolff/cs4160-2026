@@ -29,7 +29,7 @@ class BlockchainCommunityTests(TestBase[BlockchainCommunity]):
 			overlay_class=BlockchainCommunity,
 			node_count=3,
 			settings=BlockChainCommunitySettings(allowed_key_hexes=set(), 
-																						data_dir=self.temporary_directory()),
+																						data_dir="temp"),
 		)
 		keys = {self.overlay(i).my_peer.public_key.key_to_bin().hex() for i in range(3)}
 		for i in range(3):

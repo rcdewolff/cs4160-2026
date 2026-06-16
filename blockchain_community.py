@@ -2,6 +2,7 @@ import asyncio
 import random
 import time
 from collections import deque
+from uuid import uuid1
 
 from ipv8.community import Community, CommunitySettings
 from ipv8.keyvault.crypto import default_eccrypto
@@ -122,6 +123,8 @@ class BlockchainCommunity(Community):
 		self.crypto = default_eccrypto
 		self.allowed_key_hexes = set(getattr(settings, "allowed_key_hexes", set()))
 		self._data_dir = getattr(settings, "data_dir", "chaindata")
+		if self._data_dir == "temp":
+			self._data_dir = f"_temp_{uuid1()}"
 		# The grading server is an approved peer (it queries us) but not a chain peer: we never
 		# poll it or push our tip to it, we only answer what it asks.
 		self.server_key_hex = getattr(settings, "server_key_hex", "")

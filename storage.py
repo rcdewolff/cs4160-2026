@@ -30,11 +30,11 @@ def _fsync_dir(path: str) -> None:
     try:
         fd = os.open(path, flags)
     except OSError:
-        return          # e.g. Windows: a directory can't be opened as an fd
+        return   
     try:
         os.fsync(fd)
     except OSError:
-        pass            # some filesystems reject fsync on a dir fd — harmless
+        pass  
     finally:
         os.close(fd)
 

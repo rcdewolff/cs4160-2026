@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from blockchain_utils import Block, has_valid_pow
+from blockchain_utils import Block, BlockHeader, has_valid_pow
 from mempool import Mempool
 from config import DIFFICULTY, PRUNE_DEPTH
 from storage import BlockStore, unpack_header
@@ -39,11 +39,13 @@ class Blockchain:
         self.prune_depth = prune_depth
         self.mempool = mempool
 
+        self.headers: dict[bytes, BlockHeader] = {self.genesis_hash: self.genesis.header}
         self.height_by_hash: dict[bytes, int] = {self.genesis_hash: 0}
         # self.blocks: dict[bytes, Block] = {self.genesis_hash: genesis}
         self.chain = [genesis]
         self.tip: bytes = self.genesis_hash
         self.chain_height: int = 0
+        self.last_compaction_height: int = 0
 
         self.store = BlockStore(data_dir)
         self.blocks = _BlocksView(self.store)
@@ -150,17 +152,18 @@ class Blockchain:
         self.chain_height = fork_height + len(suffix)
         
         self.store.reorg_to(fork_height)
-        for height in range(fork_height + 1, self.chain_height):
+        for height in range(fork_height + 1, len(self.chain)):
             self.store.extend(height, self.chain[height])
         self._maybe_prune()
 
     def _bootstrap(self) -> None:
         for height in range(1, self.store.headers.count):
-            block_hash, header = self.store.headers.get(height)
+            block_hash, header_bytes = self.store.headers.get(height)
+            header = unpack_header(header_bytes)
             block = self.store.get_block(block_hash)
             if block is None:
-                block = Block(header=unpack_header(header), tx_hashes=[])
-            parent = header[:32]
+                block = Block(header=header, tx_hashes=[])
+            self.headers[block_hash] = header
             self.height_by_hash[block_hash] = height
             self.chain.append(block)
             self.tip = block_hash
@@ -170,8 +173,8 @@ class Blockchain:
         floor = self.chain_height - self.prune_depth
         if floor <= 0:
             return
+        if self.chain_height - self._last_compaction_height < self.prune_depth:
+            return
+        self._last_compaction_height = self.chain_height
         keep = {block_hash for block_hash, height in self.height_by_hash.items() if height >= floor}
         self.store.prune(keep=lambda k: k in keep)
-        for block_hash, height in list(self.height_by_hash.items()):
-            if height < floor and block_hash != self.genesis_hash:
-                self.height_by_hash.pop(block_hash, None)

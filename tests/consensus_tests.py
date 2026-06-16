@@ -40,7 +40,7 @@ class ConsensusLogicTests(TestBase[BlockchainCommunity]):
 			overlay_class=BlockchainCommunity,
 			node_count=2,
 			settings=BlockChainCommunitySettings(allowed_key_hexes=set(),
-																				data_dir=self.temporary_directory()),
+																				data_dir="temp"),
 		)
 
 	async def tearDown(self):
@@ -70,8 +70,11 @@ class ConsensusLogicTests(TestBase[BlockchainCommunity]):
 		node = self.overlay(0)
 		g = node.blockchain.tip
 		a1 = make_block(g, [], 1, 1000)
+		print(f"a1 hash: {a1.header.hash().hex()}")
 		b1 = make_block(g, [], 1, 2000)
+		print(f"b1 hash: {b1.header.hash().hex()}")
 		b2 = make_block(b1.header.hash(), [], 1, 2001)
+		print(f"b2 hash: {b2.header.hash().hex()}")
 
 		node.add_block(a1)
 		self.assertEqual(node.blockchain.tip, a1.header.hash())
@@ -174,7 +177,8 @@ class ConsensusNetworkTests(TestBase[BlockchainCommunity]):
 		self.initialize(
 			overlay_class=BlockchainCommunity,
 			node_count=2,
-			settings=BlockChainCommunitySettings(allowed_key_hexes=set()),
+			settings=BlockChainCommunitySettings(allowed_key_hexes=set(),
+																				data_dir="temp"),
 		)
 		keys = {self.overlay(i).my_peer.public_key.key_to_bin().hex() for i in range(2)}
 		for i in range(2):
@@ -260,7 +264,8 @@ class ConsensusMiningConvergenceTests(TestBase[BlockchainCommunity]):
 		self.initialize(
 			overlay_class=BlockchainCommunity,
 			node_count=3,
-			settings=BlockChainCommunitySettings(allowed_key_hexes=set()),
+			settings=BlockChainCommunitySettings(allowed_key_hexes=set(),
+																				data_dir="temp"),
 		)
 		keys = {self.overlay(i).my_peer.public_key.key_to_bin().hex() for i in range(3)}
 		for i in range(3):
