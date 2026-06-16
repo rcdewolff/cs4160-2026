@@ -51,6 +51,13 @@ class Blockchain:
         if self.store.headers.count == 0:
             self.store.put_block(genesis)
             self.store.extend(0, genesis)
+        else:
+            stored_genesis = self.store.headers.get(0)
+            if stored_genesis is None or stored_genesis[0] != self.genesis_hash:
+                raise ValueError("stored genesis does not match configured genesis")
+            if self.store.get_block(self.genesis_hash) is None:
+                self.store.put_block(genesis)
+        self._bootstrap()
 
     def validate_block(self, block: Block) -> bool:
         header_hash = block.header.hash()
@@ -150,7 +157,7 @@ class Blockchain:
         self.chain_height = fork_height + len(suffix)
         
         self.store.reorg_to(fork_height)
-        for height in range(fork_height + 1, self.chain_height):
+        for height in range(fork_height + 1, self.chain_height + 1):
             self.store.extend(height, self.chain[height])
         self._maybe_prune()
 
@@ -160,7 +167,6 @@ class Blockchain:
             block = self.store.get_block(block_hash)
             if block is None:
                 block = Block(header=unpack_header(header), tx_hashes=[])
-            parent = header[:32]
             self.height_by_hash[block_hash] = height
             self.chain.append(block)
             self.tip = block_hash
@@ -171,6 +177,7 @@ class Blockchain:
         if floor <= 0:
             return
         keep = {block_hash for block_hash, height in self.height_by_hash.items() if height >= floor}
+        keep.add(self.genesis_hash)
         self.store.prune(keep=lambda k: k in keep)
         for block_hash, height in list(self.height_by_hash.items()):
             if height < floor and block_hash != self.genesis_hash:

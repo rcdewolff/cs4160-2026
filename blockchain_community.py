@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import os
 import random
 import time
 from collections import deque
@@ -121,7 +123,12 @@ class BlockchainCommunity(Community):
 
 		self.crypto = default_eccrypto
 		self.allowed_key_hexes = set(getattr(settings, "allowed_key_hexes", set()))
-		self._data_dir = getattr(settings, "data_dir", "chaindata")
+		data_dir_base = getattr(settings, "data_dir", "chaindata")
+		local_store_id = hashlib.sha256(self.my_peer.public_key.key_to_bin()).hexdigest()[:16]
+		self._data_dir = os.path.join(
+			data_dir_base,
+			local_store_id,
+		)
 		# The grading server is an approved peer (it queries us) but not a chain peer: we never
 		# poll it or push our tip to it, we only answer what it asks.
 		self.server_key_hex = getattr(settings, "server_key_hex", "")
@@ -164,6 +171,10 @@ class BlockchainCommunity(Community):
 		self.register_task(
 			"sync", self._sync_step, interval=SYNC_INTERVAL, delay=SYNC_DELAY, ignore=(Exception,)
 		)
+
+	async def unload(self) -> None:
+		self.blockchain.store.close()
+		await super().unload()
 
 	def _is_approved_peer(self, peer: Peer) -> bool:
 		return peer.public_key.key_to_bin().hex() in self.allowed_key_hexes
@@ -461,7 +472,9 @@ class BlockchainCommunity(Community):
 		if payload.height < 0 or payload.height > self.blockchain.chain_height:
 			return
 
-		block = self.blockchain.chain[payload.height]
+		block = self.blockchain.store.get_block_by_height(payload.height)
+		if block is None:
+			return
 		self.ez_send(
 			peer,
 			BlockResponsePayload(

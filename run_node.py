@@ -54,6 +54,7 @@ async def main() -> None:
 	parser.add_argument("--teammates", type=str, default="", help="Comma-separated public key hexes of teammates")
 	parser.add_argument("--server-key", type=str, default=DEFAULT_SERVER_PUBLIC_KEY_HEX, help="Server public key hex")
 	parser.add_argument("--register", action="store_true", help="The person who registers the group")
+	parser.add_argument("--data-dir", type=str, default="chaindata", help="Base directory for this node's local blockchain storage")
 
 	args = parser.parse_args()
 
@@ -86,6 +87,7 @@ async def main() -> None:
 	print(f"Teammates: {teammate_hexes}")
 	print(f"Allowed Keys: {allowed_keys}")
 	print(f"Registration: {'enabled' if args.register else 'disabled'}")
+	print(f"Data directory: {args.data_dir}")
 
 	# Build IPv8 configuration
 	builder = ConfigBuilder().clear_keys().clear_overlays()
@@ -109,7 +111,7 @@ async def main() -> None:
 		"my peer",
 		[WalkerDefinition(Strategy.RandomWalk, 10, {"timeout": 3.0})],
 		default_bootstrap_defs,
-		{"allowed_key_hexes": allowed_keys, "server_key_hex": args.server_key.lower()},
+		{"allowed_key_hexes": allowed_keys, "server_key_hex": args.server_key.lower(), "data_dir": args.data_dir},
 		[("started",)],
 	)
 

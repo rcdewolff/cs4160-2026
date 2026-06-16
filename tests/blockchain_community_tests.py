@@ -1,5 +1,6 @@
 from ipv8.keyvault.crypto import default_eccrypto
 from ipv8.test.base import TestBase
+from unittest.mock import MagicMock
 
 import blockchain_community
 from blockchain_community import (
@@ -7,6 +8,7 @@ from blockchain_community import (
 	BlockChainCommunitySettings,
 	BlockchainCommunity,
 	BlockResponsePayload,
+	GetBlockPayload,
 	SubmitTransactionPayload,
 	TransactionGossipPayload,
 )
@@ -118,6 +120,18 @@ class BlockchainCommunityTests(TestBase[BlockchainCommunity]):
 
 		self.assertEqual(node1.blockchain.tip, block.header.hash())
 		self.assertEqual(len(node1.blockchain.chain), 2)
+
+	def test_get_block_uses_store_lookup(self):
+		node = self.overlay(1)
+		peer = self.peer(0)
+		block = node.blockchain.chain[0]
+		node.blockchain.store.get_block_by_height = MagicMock(return_value=block)
+		node.ez_send = MagicMock()
+
+		node.on_get_block.__wrapped__(node, peer, GetBlockPayload(0))
+
+		node.blockchain.store.get_block_by_height.assert_called_once_with(0)
+		node.ez_send.assert_called_once()
 
 	def test_equal_height_tie_break_uses_smaller_hash(self):
 		node = self.overlay(0)
