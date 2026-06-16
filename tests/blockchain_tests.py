@@ -1,5 +1,5 @@
 import unittest
-import shutil
+from uuid import uuid1
 
 from blockchain import Blockchain
 from blockchain_utils import (
@@ -11,10 +11,6 @@ from mempool import Mempool
 
 class TestBlockchain(unittest.TestCase):
     def setUp(self):
-        try:
-            shutil.rmtree("temp_chaindata") # Careful changing this, rm -rf equivalent
-        except FileNotFoundError:
-            pass
         genesis_header = BlockHeader(
             prev_hash=b"\x00" * 32,
             txs_hash=b"\x00" * 32,
@@ -24,7 +20,7 @@ class TestBlockchain(unittest.TestCase):
         )
         self.genesis_block = Block(genesis_header, [])
         self.mempool = Mempool()
-        self.blockchain = Blockchain(self.genesis_block, self.mempool, difficulty=0, data_dir="temp_chaindata")
+        self.blockchain = Blockchain(self.genesis_block, self.mempool, difficulty=0, data_dir=f"TestBlockchain_temp_{uuid1()}")
 
     def test_add_valid_block(self):
         # Difficulty 0, any hash is valid.
